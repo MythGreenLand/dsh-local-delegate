@@ -1,0 +1,22 @@
+# Node / DSH local artifacts
+node_modules/
+.tmp/
+.tools/
+.local-out/
+*.local.md
+
+# Local environment and secrets
+.env
+.env.*
+*.pem
+*.key
+.credentials*
+secrets/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Local Model Delegate",
+    "description": "Delegates mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint so the main model stops spending tokens on low-value transformations."
+  }
+}

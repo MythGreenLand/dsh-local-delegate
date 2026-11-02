@@ -1,0 +1,23 @@
+# dsh-local-delegate bundle patch.
+#
+# Insert the Host half with a generic localhost default. Point it at your own
+# endpoint by overriding the same row id in the profile `cordis.patch.yml`
+# (the last patch layer wins), or by editing this block before installing.
+- insert:
+    - id: local-delegate
+      name: 'dsh-local-delegate'
+      config:
+        enabled: true
+        retries: 1
+        endpoint:
+          kind: ollama-native
+          baseURL: http://127.0.0.1:11434
+          model: gemma4:e2b
+          think: false
+          keepAlive: 30m
+          numCtx: 32768
+          timeoutMs: 120000
+        chunkChars: 4000
+        maxConcurrency: 2
+        maxInlineChars: 8000
+        allowRoots: []

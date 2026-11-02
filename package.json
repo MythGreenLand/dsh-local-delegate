@@ -1,0 +1,44 @@
+{
+  "name": "dsh-local-delegate",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "description": "Delegate mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint — Ollama native API or any OpenAI-compatible gateway — so the main model stops spending tokens on low-value text transformations.",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "scripts",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "INSTALL.md"
+  ],
+  "scripts": {
+    "verify": "node scripts/verify-endpoint.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "~3.18.5"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "local-model",
+    "ollama",
+    "token-saving",
+    "delegation"
+  ],
+  "license": "MIT"
+}
