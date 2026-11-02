@@ -57,6 +57,10 @@ node examples/build-zh.mjs <课程目录>
 
 [docs/design-and-feasibility.md](docs/design-and-feasibility.md) 记录了可行性论证、DSH 现有能力核查、分层委派设计、安全与失败处理、成本模型、分期计划与实测数据。
 
+## 贡献者
+
+见 [CONTRIBUTORS.md](CONTRIBUTORS.md)：项目由 **MythGreenLand** 与 **DeepSeek**（AI 编码代理）共同完成。
+
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。
