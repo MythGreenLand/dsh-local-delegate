@@ -23,6 +23,10 @@ README.md · INSTALL.md     使用与安装手册
 ## 快速开始
 
 ```powershell
+# 0) 获取源码
+git clone https://github.com/MythGreenLand/dsh-local-delegate
+cd dsh-local-delegate
+
 # 1) 先验证端点（不安装任何东西）
 node scripts/verify-endpoint.mjs --base-url http://127.0.0.1:11434 --model gemma4:e2b
 
