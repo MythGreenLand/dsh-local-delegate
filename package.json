@@ -25,7 +25,8 @@
   ],
   "scripts": {
     "verify": "node scripts/verify-endpoint.mjs",
-    "test": "node scripts/test-host.mjs"
+    "verify:gui": "node scripts/verify-gui.mjs",
+    "test": "node scripts/test-host.mjs && node scripts/test-client.mjs"
   },
   "dsh": {
     "bundle": {

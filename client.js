@@ -1255,9 +1255,11 @@ window.__ModuleLoader__.load({
     exports.inject = ['slots', 'locale', 'configForms']
     exports.name = 'local-delegate-settings'
     exports.Page = Page
+    exports.__test = { Page, HealthCard, ProbeResult, SubagentCard, StatsCard, buildOps, buildPiProvider }
     return module.exports
   },
 })
+
 
 
 
