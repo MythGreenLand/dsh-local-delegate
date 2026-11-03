@@ -1,18 +1,20 @@
 {
   "name": "dsh-local-delegate",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Delegate mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint — Ollama native API or any OpenAI-compatible gateway — so the main model stops spending tokens on low-value text transformations.",
+  "description": "Delegate mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint — Ollama native API or any OpenAI-compatible gateway — so the main model stops spending tokens on low-value text transformations. v0.3 adds a Web GUI configuration page (Plugins → Configure and Settings → Local model) with connection tests, model discovery, fallback editing, Subagent route registration, and savings statistics.",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
+    "client.js",
     "lib",
     "scripts",
     "locale/*.json",
@@ -22,11 +24,21 @@
     "INSTALL.md"
   ],
   "scripts": {
-    "verify": "node scripts/verify-endpoint.mjs"
+    "verify": "node scripts/verify-endpoint.mjs",
+    "test": "node scripts/test-host.mjs"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.5": "compatible"
+      }
     }
   },
   "peerDependencies": {
@@ -35,6 +47,7 @@
   "keywords": [
     "dsh",
     "dsh-plugin",
+    "dsh-client-ui",
     "local-model",
     "ollama",
     "token-saving",

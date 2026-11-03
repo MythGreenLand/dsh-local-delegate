@@ -4,66 +4,34 @@
 
 关键不在「多一个模型工具」，而在**正文走哪条路**：插件自己读文件、分块、调用本地模型、写回结果，所以整篇文档**不会进入主模型上下文**。一篇 10KB 文档的翻译，主模型只花约 150 token（一次调用），而不是约 5,000 token（读原文 + 写译文）。
 
-- 当前版本：**0.2.1**
+- 当前版本：**0.3.0**
 - 协议：Ollama 原生 `/api/chat`（可关思考、保活、控上下文）或任意 OpenAI 兼容端点
+- 配置：**DSH GUI 可视化配置**（Plugins → 行 Configure，或 Settings → 本地模型），也继续支持 profile `cordis.patch.yml` 覆盖
 - 安装与验证：见 [INSTALL.md](INSTALL.md)（推荐按版本目录安装，升级可免重启加载）
 
-## 仓库结构
+## GUI 配置（0.3.0 新增）
 
-```
-index.js / lib/            Host 插件：工具、端点链客户端、分块、护栏、统计
-cordis.patch.yml           bundle 补丁：插入插件行（默认 localhost，安装前按需改）
-scripts/                   verify-endpoint.mjs（安装前自检）、sync-install.ps1（同步+升级）
-locale/ · icon.svg         插件显示元数据
-docs/design-and-feasibility.md   设计/可行性/实测记录（含成本模型与风险）
-examples/                  HTML→Markdown→翻译→重建网页的本地化示例脚本
-README.md · INSTALL.md     使用与安装手册
-```
+安装后有两个入口，指向同一份配置：
 
-## 快速开始
+1. **Plugins → Installed plugins → dsh-local-delegate → 行 Configure**（原生位置）；
+2. **Settings → 本地模型**（侧边导航新增分区）。
 
-```powershell
-# 0) 获取源码
-git clone https://github.com/MythGreenLand/dsh-local-delegate
-cd dsh-local-delegate
+页面能力：
 
-# 1) 先验证端点（不安装任何东西）
-node scripts/verify-endpoint.mjs --base-url http://127.0.0.1:11434 --model gemma4:e2b
+- 协议（Ollama 原生 / OpenAI 兼容）、服务器地址、模型（可拉取列表后下拉选择）、API Key / API Key 环境变量；
+- 高级：`path`、`timeoutMs`、`temperature`、`maxOutputTokens`、`think`、`reasoningEffort`、`numCtx`、`keepAlive`、额外 headers（JSON）；
+- 备用端点（fallbackEndpoints）增删改；
+- 委派限制：`retries`、分块、并发、批量/内联上限、每分钟调用数等；
+- **测试连接**（用表单里未保存的值探测，只允许回环/内网目标；公网需显式打开 `probeAllowPublic`）；
+- **节省统计**：委派调用数、失败数、本地处理字符、本地 token、估算节省的主模型 token（内存计数，插件重载清零）；
+- **作为 Subagent / 模型选择器路由**：把当前端点注册为 `llm-pi-ai` 的 provider `local-delegate`，并写入 `subagent-model-selection-settings` 的 `allowedModels`。Subagent 策略在新建会话时采样，启用后请新开会话。
 
-# 2) 同步到版本目录（PowerShell 7）
-pwsh -NoProfile -File scripts/sync-install.ps1
+保存行为：
 
-# 3) 在 DSH 会话里让 Agent 执行：
-#    plugin_manager action=install_bundle target=<第 2 步输出的目录>
-
-# 4) 会话内验证：local_health → local delegate: ready (status: available, v0.2.1)
-```
-
-完整步骤（验证清单、配置、免重启升级、回滚、故障排查）见 [INSTALL.md](INSTALL.md)。
-
-## 示例：把一门在线课程本地化
-
-`examples/` 里是两个零依赖脚本，演示「HTML 抽取 → 纯文本翻译 → 重建网页」的流程（直接翻原始 HTML 会被 5B 模型破坏标签结构）：
-
-```powershell
-node examples/extract-html.mjs <课程目录> <课程目录>/.l10n-src
-# 让 Agent 用 local_batch 翻译 .l10n-src 下的 Markdown
-node examples/build-zh.mjs <课程目录>
-```
-
-实测：61k 源字符、28 页，5.1 分钟、29.5k local tokens，预计为主模型节省约 92% token。细节见 [docs/design-and-feasibility.md](docs/design-and-feasibility.md)。
-
-## 设计文档
-
-[docs/design-and-feasibility.md](docs/design-and-feasibility.md) 记录了可行性论证、DSH 现有能力核查、分层委派设计、安全与失败处理、成本模型、分期计划与实测数据。
-
-## 贡献者
-
-见 [CONTRIBUTORS.md](CONTRIBUTORS.md)：项目由 **MythGreenLand** 与 **DeepSeek**（AI 编码代理）共同完成。
-
-## 许可证
-
-MIT，见 [LICENSE](LICENSE)。
+- 保存写入 profile 的 `cordis.patch.yml` 中 `- id: local-delegate` 覆盖行，**数秒内热生效**，无需重启；
+- 首次保存会生成**完整覆盖行**（未在 GUI 暴露的普通字段会按当前 raw 值钉住）；删除该行即回到 bundle 默认值；
+- `apiKey` 会以明文写进 profile patch；更推荐用 `apiKeyEnv`（环境变量/DSH 凭据引用名）；
+- `allowOutsideCwd` / `allowRoots` / `denyGlobs` 等安全策略**有意保留 YAML**，页面只读展示生效值。
 
 ## 工具
 
@@ -75,7 +43,7 @@ MIT，见 [LICENSE](LICENSE)。
 
 文件模式默认输出路径：源文件名插入 `.local`（`README.md` → `README.local.md`）。工作目录之外的路径会在回执里显示绝对路径。
 
-## 可用性机制（0.2.x）
+## 可用性机制（0.2.0 新增）
 
 - **端点故障转移**：`endpoint` 主端点 + `fallbackEndpoints` 备用链；主端点不可达/报错时自动依次尝试，回执里标注 `(fallback)`。
 - **有限重试**：`retries`（0–3，默认 1）只对传输类错误重试（连接失败、超时、5xx、429）；HTTP 4xx（模型不存在、鉴权错）直接换下一个端点。
@@ -96,10 +64,11 @@ MIT，见 [LICENSE](LICENSE)。
     retries: 1
     endpoint:
       kind: ollama-native            # ollama-native | openai-compatible
-      baseURL: http://<ollama-host>:11434
+      baseURL: http://10.0.101.11:11434
       path: ""                       # 默认 /api/chat 或 /v1/chat/completions
       model: gemma4:e2b
-      apiKey: ""                     # 仅 OpenAI 兼容端点需要
+      apiKey: ""                     # 明文密钥（GUI 也可填）；更推荐下面的 apiKeyEnv
+      apiKeyEnv: ""                  # 环境变量 / DSH 凭据引用名，作为 apiKey 的替代
       headers: {}                    # 例：{ Authorization: "Bearer ollama" }
       numCtx: 32768                  # ollama-native
       keepAlive: 30m                 # ollama-native，避免反复冷加载
@@ -122,6 +91,7 @@ MIT，见 [LICENSE](LICENSE)。
     maxBatchChars: 120000            # 单次批量总字符上限
     maxResultChars: 6000             # 内联模式回给主模型的正文上限
     maxCallsPerMinute: 40            # 本地请求限流
+    probeAllowPublic: false          # GUI「测试连接」是否允许探测公网地址（默认只允许回环/内网）
     allowOutsideCwd: false           # true = 不限制路径（不推荐）
     allowRoots: []                   # 允许访问的额外根目录（绝对路径或相对 cwd）
     denyGlobs: ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*", "**/.credentials*", "**/secrets/**", "**/.git/**"]

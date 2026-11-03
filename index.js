@@ -17,7 +17,6 @@
  */
 import nodePath from 'node:path'
 import { promises as fsp } from 'node:fs'
-import z from '@deepseek-ai/schemastery'
 import { callModel, probeEndpoint, endpointLabel, isRetryableEndpointError } from './lib/endpoint.js'
 import { splitText, joinChunks } from './lib/chunker.js'
 import {
@@ -30,146 +29,26 @@ import {
   formatBytes,
 } from './lib/guard.js'
 import { createStats, recordSuccess, recordFailure, renderStats } from './lib/stats.js'
+import {
+  Config,
+  configWarnings,
+  endpointChain,
+  endpointSummaryText,
+  modelForEndpoint,
+  readConfig,
+} from './lib/config.js'
+import { createApiHandler, withResolvedKey } from './lib/api.js'
+
+export { Config }
 
 export const name = 'local-delegate'
 export const inject = ['tools']
 
-/** Reported by local_health, /localdoctor, and the startup log line. */
-const PLUGIN_VERSION = '0.2.1'
+/** Reported by local_health, /localdoctor, the startup log line, and the GUI. */
+const PLUGIN_VERSION = '0.3.0'
 
 const TASKS = ['translate', 'summarize', 'extract', 'classify', 'rewrite', 'commit_message', 'names']
 
-const DEFAULT_DENY_GLOBS = [
-  '**/.env',
-  '**/.env.*',
-  '**/*.pem',
-  '**/*.key',
-  '**/*.p12',
-  '**/id_rsa*',
-  '**/id_ed25519*',
-  '**/.credentials*',
-  '**/secrets/**',
-  '**/.git/**',
-]
-
-const DEFAULT_ENDPOINT = Object.freeze({
-  kind: 'ollama-native',
-  baseURL: 'http://127.0.0.1:11434',
-  path: '',
-  model: '',
-  apiKey: '',
-  headers: {},
-  numCtx: 32768,
-  keepAlive: '30m',
-  think: false,
-  reasoningEffort: 'none',
-  timeoutMs: 120000,
-  temperature: 0,
-  maxOutputTokens: 4096,
-})
-
-const EndpointSchema = z.object({
-  kind: z.union(['ollama-native', 'openai-compatible']).default('ollama-native'),
-  baseURL: z.string().default(DEFAULT_ENDPOINT.baseURL),
-  path: z.string().default(''),
-  model: z.string().default(''),
-  apiKey: z.string().default(''),
-  headers: z.dict(z.string()).default({}),
-  numCtx: z.number().default(DEFAULT_ENDPOINT.numCtx),
-  keepAlive: z.string().default(DEFAULT_ENDPOINT.keepAlive),
-  think: z.boolean().default(false),
-  reasoningEffort: z.string().default('none'),
-  timeoutMs: z.number().default(DEFAULT_ENDPOINT.timeoutMs),
-  temperature: z.number().default(0),
-  maxOutputTokens: z.number().default(DEFAULT_ENDPOINT.maxOutputTokens),
-})
-
-export const Config = z.object({
-  enabled: z.boolean().default(true),
-  endpoint: EndpointSchema,
-  fallbackEndpoints: z.array(EndpointSchema).default([]),
-  modelsByTask: z.dict(z.string()).default({}),
-  maxInlineChars: z.number().default(8000),
-  chunkChars: z.number().default(4000),
-  maxConcurrency: z.number().default(2),
-  maxSourceChars: z.number().default(200000),
-  maxBatchFiles: z.number().default(10),
-  maxBatchChars: z.number().default(120000),
-  maxResultChars: z.number().default(6000),
-  maxCallsPerMinute: z.number().default(40),
-  retries: z.number().default(1),
-  allowOutsideCwd: z.boolean().default(false),
-  allowRoots: z.array(z.string()).default([]),
-  denyGlobs: z.array(z.string()).default(DEFAULT_DENY_GLOBS),
-  promptHelp: z.boolean().default(true),
-  warmupOnStart: z.boolean().default(true),
-})
-
-function positive(value, fallback) {
-  const number = Number(value)
-  return Number.isFinite(number) && number > 0 ? number : fallback
-}
-
-function normalizeEndpoint(source) {
-  const raw = source && typeof source === 'object' ? source : {}
-  return {
-    ...DEFAULT_ENDPOINT,
-    ...raw,
-    headers: { ...DEFAULT_ENDPOINT.headers, ...(raw.headers ?? {}) },
-  }
-}
-
-/** Merge defaults into the live config and reject what cannot work. */
-function normalizeConfig(raw) {
-  const source = raw && typeof raw === 'object' ? raw : {}
-  const endpoint = normalizeEndpoint(source.endpoint)
-  if (endpoint.kind !== 'ollama-native' && endpoint.kind !== 'openai-compatible') {
-    throw new Error(`local-delegate: endpoint.kind must be "ollama-native" or "openai-compatible", got ${JSON.stringify(endpoint.kind)}`)
-  }
-  if (typeof endpoint.baseURL !== 'string' || endpoint.baseURL.trim() === '') {
-    throw new Error('local-delegate: endpoint.baseURL must be a non-empty string (for example http://<ollama-host>:11434)')
-  }
-  const fallbackEndpoints = Array.isArray(source.fallbackEndpoints)
-    ? source.fallbackEndpoints.filter((entry) => entry && typeof entry === 'object').map(normalizeEndpoint)
-    : []
-  return {
-    enabled: source.enabled !== false,
-    endpoint,
-    fallbackEndpoints,
-    modelsByTask: source.modelsByTask && typeof source.modelsByTask === 'object' ? source.modelsByTask : {},
-    maxInlineChars: positive(source.maxInlineChars, 8000),
-    chunkChars: Math.max(500, positive(source.chunkChars, 4000)),
-    maxConcurrency: Math.max(1, Math.min(8, positive(source.maxConcurrency, 2))),
-    maxSourceChars: positive(source.maxSourceChars, 200000),
-    maxBatchFiles: positive(source.maxBatchFiles, 10),
-    maxBatchChars: positive(source.maxBatchChars, 120000),
-    maxResultChars: positive(source.maxResultChars, 6000),
-    maxCallsPerMinute: positive(source.maxCallsPerMinute, 40),
-    retries: Math.max(0, Math.min(3, Math.floor(Number(source.retries) || 0))),
-    allowOutsideCwd: source.allowOutsideCwd === true,
-    allowRoots: Array.isArray(source.allowRoots) ? source.allowRoots.filter((entry) => typeof entry === 'string' && entry.trim()) : [],
-    denyGlobs: Array.isArray(source.denyGlobs) ? source.denyGlobs : DEFAULT_DENY_GLOBS,
-    promptHelp: source.promptHelp !== false,
-    warmupOnStart: source.warmupOnStart !== false,
-  }
-}
-
-/** Collect non-fatal configuration problems so startup can report them once. */
-function configWarnings(config) {
-  const warnings = []
-  if (!config.endpoint.model) {
-    warnings.push('endpoint.model is empty: local_* tools fail until it is set (for example "gemma4:e2b") in the local-delegate config row')
-  }
-  if (!/^https?:\/\//i.test(config.endpoint.baseURL)) {
-    warnings.push(`endpoint.baseURL should start with http:// or https:// (got ${JSON.stringify(config.endpoint.baseURL)})`)
-  }
-  for (const [index, fallback] of config.fallbackEndpoints.entries()) {
-    if (!fallback.baseURL) warnings.push(`fallbackEndpoints[${index}].baseURL is empty`)
-    if (!fallback.model && !config.endpoint.model) warnings.push(`fallbackEndpoints[${index}].model is empty and no primary model is configured`)
-  }
-  if (config.chunkChars > config.maxSourceChars) warnings.push('chunkChars is larger than maxSourceChars; long files will be rejected before chunking')
-  return warnings
-}
 
 function hostOf(baseURL) {
   try {
@@ -177,10 +56,6 @@ function hostOf(baseURL) {
   } catch {
     return String(baseURL)
   }
-}
-
-function endpointChain(config) {
-  return [config.endpoint, ...config.fallbackEndpoints]
 }
 
 function endpointSummary(entry) {
@@ -194,18 +69,6 @@ function endpointSummary(entry) {
     latency_ms: entry.probe?.latencyMs ?? null,
     error: entry.probe?.error ?? null,
   }
-}
-
-function modelForEndpoint(config, endpoint, task) {
-  const override = config.modelsByTask?.[task]
-  const primary = typeof override === 'string' && override.trim() ? override.trim() : String(config.endpoint.model || '').trim()
-  const model = String(endpoint.model || primary || '').trim()
-  if (!model) {
-    throw new Error(
-      'LOCAL_MODEL_UNSET: set endpoint.model (for example "gemma4:e2b") in the local-delegate plugin config, then run local_health',
-    )
-  }
-  return model
 }
 
 function targetLanguageOf(args) {
@@ -328,7 +191,7 @@ async function callWithFallback(runtime, request) {
       assertRate(runtime)
       try {
         const result = await callModel({
-          endpoint,
+          endpoint: withResolvedKey(endpoint),
           model,
           system: request.system,
           user: request.user,
@@ -363,7 +226,7 @@ async function refreshHealth(runtime) {
     const model = String(endpoint.model || config.endpoint.model || '')
     let probe
     try {
-      probe = await probeEndpoint({ endpoint, model })
+      probe = await probeEndpoint({ endpoint: withResolvedKey(endpoint), model })
     } catch (error) {
       probe = { ok: false, latencyMs: 0, modelFound: false, models: [], error: String(error?.message ?? error) }
     }
@@ -481,7 +344,7 @@ async function transformText(runtime, task, text, options, signal) {
 }
 
 async function executeTransform(runtime, ctx, exec, args) {
-  const config = runtime.config
+  const config = runtime.refresh ? runtime.refresh() : runtime.config
   if (!config.enabled) throw new Error('LOCAL_DISABLED: the local-delegate plugin is disabled (enabled=false)')
   const task = typeof args.task === 'string' ? args.task : ''
   if (!TASKS.includes(task)) {
@@ -602,7 +465,7 @@ async function executeTransform(runtime, ctx, exec, args) {
 }
 
 async function executeBatch(runtime, ctx, exec, args) {
-  const config = runtime.config
+  const config = runtime.refresh ? runtime.refresh() : runtime.config
   if (!config.enabled) throw new Error('LOCAL_DISABLED: the local-delegate plugin is disabled (enabled=false)')
   const task = typeof args.task === 'string' ? args.task : ''
   if (!TASKS.includes(task)) throw new Error(`LOCAL_TASK_INVALID: "task" must be one of ${TASKS.join(', ')}`)
@@ -819,6 +682,7 @@ function remediationFor(runtime) {
 }
 
 function healthValue(runtime) {
+  if (runtime.refresh) runtime.refresh()
   const health = runtime.health
   const value = {
     ok: health.status !== 'unavailable',
@@ -852,7 +716,7 @@ function healthValue(runtime) {
 }
 
 function doctorText(runtime) {
-  const config = runtime.config
+  const config = runtime.refresh ? runtime.refresh() : runtime.config
   const health = runtime.health
   const lines = []
   lines.push(`Local delegate doctor (plugin v${PLUGIN_VERSION})`)
@@ -881,9 +745,9 @@ const TOOL_OUTPUT_SCHEMA = { type: 'object' }
  * @param {object} rawConfig validated row config.
  */
 export function apply(ctx, rawConfig) {
-  const config = normalizeConfig(rawConfig)
   const runtime = {
-    config,
+    raw: rawConfig,
+    config: readConfig(rawConfig),
     stats: createStats(),
     rate: [],
     health: { status: 'unknown', checkedAt: 0, primary: null, fallbacks: [], effective: null, error: null },
@@ -898,21 +762,70 @@ export function apply(ctx, rawConfig) {
     }
   }
 
+  /** Re-read the live (volatile-updated) config; keep the old snapshot on invalid values. */
+  const refreshConfig = () => {
+    try {
+      runtime.config = readConfig(runtime.raw)
+    } catch (error) {
+      log('warn', `live config update rejected: ${String(error?.message ?? error).slice(0, 240)}`)
+    }
+    return runtime.config
+  }
+  refreshConfig()
+  runtime.refresh = refreshConfig
+
+  // Volatile-only edits (the GUI save path) update config references in place;
+  // refresh derived state and re-probe without remounting the plugin.
+  if (typeof ctx.on === 'function') {
+    let probeTimer
+    ctx.on('loader/volatile-update', () => {
+      const before = endpointSummaryText(runtime.config)
+      const after = endpointSummaryText(refreshConfig())
+      if (before !== after) log('info', `config updated: ${after}`)
+      clearTimeout(probeTimer)
+      probeTimer = setTimeout(() => {
+        void refreshHealth(runtime).catch(() => {})
+      }, 500)
+      probeTimer.unref?.()
+    })
+    if (typeof ctx.effect === 'function') ctx.effect(() => () => clearTimeout(probeTimer), 'local-delegate: volatile probe timer')
+  }
+
+  // Same-origin GUI API: status / probe / models. Runs in its own fiber so a
+  // composition without an HTTP server cannot take the tools down with it.
+  if (typeof ctx.inject === 'function') {
+    const getConnection = () => (typeof ctx.get === 'function' ? ctx.get('connection') : undefined)
+    ctx.inject(['webServer'], (scoped) => {
+      const server = scoped.webServer
+      if (!server || typeof server.register !== 'function') return
+      const handler = createApiHandler({
+        getRuntime: () => runtime,
+        getConnection,
+        refresh: refreshConfig,
+        version: PLUGIN_VERSION,
+        log,
+      })
+      scoped.effect(
+        () => server.register({ kind: 'prefix', path: '/api/local-delegate', handler }),
+        'local-delegate: settings API',
+      )
+    })
+  }
+
+  const config = runtime.config
   for (const warning of configWarnings(config)) log('warn', warning)
-  log('info', `ready: v${PLUGIN_VERSION} ${config.endpoint.kind} ${config.endpoint.baseURL} model=${config.endpoint.model || '(unset)'}`)
+  log('info', `ready: v${PLUGIN_VERSION} ${endpointSummaryText(config)}`)
 
   const systemPrompt = ctx.get('systemPrompt')
 
   if (config.enabled) {
     if (config.promptHelp && systemPrompt) {
-      const model = config.endpoint.model || '(model not configured)'
-      const where = hostOf(config.endpoint.baseURL)
       systemPrompt.section({
         name: 'tool:local-delegate',
         order: 10050,
         interpolate: false,
         text: [
-          `Local cheap model: \`${model}\` at ${where} (free, separate from this conversation).`,
+          'A local cheap model endpoint is configured for mechanical text work (free, separate from this conversation); its current model, address, and availability appear in the runtime context below.',
           'Delegate MECHANICAL text work whose content you do not need to understand, only its result: translate, summarize, extract fields, classify, rewrite, write commit messages, propose names.',
           'Call `local_transform` with a file `path` (preferred) or `local_batch` with `paths`; never paste long text into the call — text written into a tool call costs output tokens, a path costs about a hundred. Delegate when the content is larger than ~800 tokens or spans whole files; for many files let `local_batch` run its default dry run first.',
           'Do the work yourself when it needs judgement or trust: code changes and debugging, architecture or decisions, final user-facing answers, secrets or credentials or personal data, or anything you must verify line by line.',
@@ -932,16 +845,18 @@ export function apply(ctx, rawConfig) {
           const active = configRef.config
           if (!active.enabled) return ''
           const health = configRef.health
+          const where = hostOf(active.endpoint.baseURL)
+          const model = active.endpoint.model || '(unset)'
           if (health.status === 'available') {
-            return `Local cheap model \`${active.endpoint.model || '(unset)'}\` at ${hostOf(active.endpoint.baseURL)} is available.`
+            return `Local cheap model \`${model}\` at ${where} is available.`
           }
           if (health.status === 'degraded' && health.effective) {
             return `Local cheap model primary endpoint is unavailable; fallback \`${health.effective.model}\` at ${hostOf(health.effective.endpoint.baseURL)} is available.`
           }
           if (health.status === 'unavailable') {
-            return `Local cheap model is unavailable (${health.error || 'probe failed'}). Do mechanical text work yourself; run local_health or /localdoctor for diagnostics.`
+            return `Local cheap model \`${model}\` at ${where} is unavailable (${health.error || 'probe failed'}). Do mechanical text work yourself; run local_health or /localdoctor for diagnostics.`
           }
-          return `Local cheap model \`${active.endpoint.model || '(unset)'}\` at ${hostOf(active.endpoint.baseURL)} is configured; use local_health before delegating mechanical text work.`
+          return `Local cheap model \`${model}\` at ${where} is configured; use local_health before delegating mechanical text work.`
         },
       })
     }
@@ -961,7 +876,7 @@ export function apply(ctx, rawConfig) {
           },
           text: {
             type: 'string',
-            description: `Inline source text, at most ${config.maxInlineChars} chars. Use only for short snippets; prefer path.`,
+            description: 'Inline source text, within the configured inline character limit. Use only for short snippets; prefer path.',
           },
           out_path: {
             type: 'string',
@@ -985,7 +900,7 @@ export function apply(ctx, rawConfig) {
         additionalProperties: false,
       },
       output: { schema: TOOL_OUTPUT_SCHEMA, render: (_args, value) => [{ type: 'text', text: receiptText(value) }] },
-      timeoutMs: Math.max(30_000, Math.min(600_000, config.endpoint.timeoutMs * 3)),
+      timeoutMs: 900_000,
       isConcurrencySafe: () => false,
       async execute(args, exec) {
         try {
@@ -1008,7 +923,7 @@ export function apply(ctx, rawConfig) {
           paths: {
             type: 'array',
             items: { type: 'string' },
-            description: `Files to process, relative to the working directory (at most ${config.maxBatchFiles}).`,
+            description: 'Files to process, relative to the working directory, within the configured batch file limit.',
           },
           out_dir: { type: 'string', description: 'Directory for outputs, relative to the working directory. Defaults to .local-out.' },
           target_language: { type: 'string', description: 'Target language for task=translate. Required for translate.' },
@@ -1051,10 +966,13 @@ export function apply(ctx, rawConfig) {
     commands.register({
       name: 'localstats',
       description: 'Show local cheap-model delegation statistics (calls, tokens processed, estimated main-model tokens avoided)',
-      handler: () => ({
-        kind: 'success',
-        text: renderStats(runtime.stats, runtime.config.endpoint, runtime.health),
-      }),
+      handler: () => {
+        if (runtime.refresh) runtime.refresh()
+        return {
+          kind: 'success',
+          text: renderStats(runtime.stats, runtime.config.endpoint, runtime.health),
+        }
+      },
     })
     commands.register({
       name: 'localdoctor',
@@ -1066,10 +984,11 @@ export function apply(ctx, rawConfig) {
   if (config.enabled && config.warmupOnStart) {
     const startWarmup = () => {
       const probeAndLog = () => {
+        const active = runtime.refresh ? runtime.refresh() : runtime.config
         refreshHealth(runtime)
           .then((health) => {
             if (health.status === 'available') {
-              log('info', `connected: ${config.endpoint.baseURL} model=${config.endpoint.model || '(unset)'} (${health.primary?.probe?.latencyMs ?? '?'}ms)`)
+              log('info', `connected: ${active.endpoint.baseURL} model=${active.endpoint.model || '(unset)'} (${health.primary?.probe?.latencyMs ?? '?'}ms)`)
             } else if (health.status === 'degraded') {
               log('warn', `primary endpoint unavailable; fallback ${health.effective?.endpoint?.baseURL ?? 'unknown'} is serving`)
             } else {
@@ -1100,3 +1019,7 @@ function enrich(error) {
   wrapped.code = error?.code
   return wrapped
 }
+
+
+
+
