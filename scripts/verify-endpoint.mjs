@@ -3,7 +3,7 @@
  * Verify one local-model endpoint before installing or when delegation fails.
  *
  * Usage:
- *   node scripts/verify-endpoint.mjs --base-url http://<ollama-host>:11434 --model gemma4:e2b
+ *   node scripts/verify-endpoint.mjs --base-url http://10.0.101.11:11434 --model gemma4:e2b
  *   node scripts/verify-endpoint.mjs --kind openai-compatible --base-url http://host:11434/v1 \
  *        --model gemma4:e2b --api-key ollama
  *
@@ -73,7 +73,7 @@ function fail(reason) {
   process.exit(1)
 }
 
-if (!options.baseURL) fail('--base-url is required (for example http://<ollama-host>:11434)')
+if (!options.baseURL) fail('--base-url is required (for example http://10.0.101.11:11434)')
 if (!options.model) fail('--model is required (for example gemma4:e2b)')
 
 const probe = await probeEndpoint({ endpoint, model: options.model })

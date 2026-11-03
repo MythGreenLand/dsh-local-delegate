@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "本地小模型委派",
-    "description": "把翻译、摘要、抽取、分类、改写等机械文本工作交给本地廉价模型（Ollama 原生 API 或任意 OpenAI 兼容端点），主模型只负责判断与工具调用，从而节省 API token。"
+    "description": "把翻译、摘要、抽取、分类、改写等机械文本工作交给本地廉价模型（Ollama 原生 API 或任意 OpenAI 兼容端点），主模型只负责判断与工具调用，从而节省 API token。v0.4 新增按项目工作区的「本地 AI 介入程度」等级（无/轻度/默认/更高/最高）与 scoped planner 策略、local_worker 子 agent；另提供可选的 SlaveAgentTeams 模式：master 可同时驱动多个本地或云端 slave 子 agent 并行工作，并与原生 Agent Teams 并存。v0.4.1 在输入框工具栏（模型/推理等级旁）新增「本地 AI 介入程度」快捷选择器，并可配置是否显示。"
   }
 }

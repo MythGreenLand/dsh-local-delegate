@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Local Model Delegate",
-    "description": "Delegates mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint so the main model stops spending tokens on low-value transformations."
+    "description": "Delegates mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint so the main model stops spending tokens on low-value transformations. v0.4 adds per-workspace local AI involvement levels (none/light/default/high/max) with a scoped planner policy and local_worker delegation, plus an opt-in SlaveAgentTeams mode for running several local or cloud slave subagents in parallel while coexisting with native Agent Teams. v0.4.1 adds a quick level picker in the composer tool row (next to the model / reasoning controls) with a config switch to show or hide it."
   }
 }

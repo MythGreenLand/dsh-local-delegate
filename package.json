@@ -1,9 +1,9 @@
 {
   "name": "dsh-local-delegate",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
-  "description": "Delegate mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint — Ollama native API or any OpenAI-compatible gateway — so the main model stops spending tokens on low-value text transformations. v0.3 adds a Web GUI configuration page (Plugins → Configure and Settings → Local model) with connection tests, model discovery, fallback editing, Subagent route registration, and savings statistics.",
+  "description": "Delegate mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint — Ollama native API or any OpenAI-compatible gateway — so the main model stops spending tokens on low-value text transformations. v0.4 adds per-project-workspace local AI involvement levels (none/light/default/high/max) with a scoped planner policy and local_worker delegation, plus SlaveAgentTeams: an opt-in mode where the master agent runs several local or cloud slave subagents in parallel (spawn/status/wait/send/interrupt) and coexists with native Agent Teams. v0.4.1 adds a composer quick level picker (next to the model / reasoning controls) with a config switch to show or hide it.",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
@@ -20,13 +20,13 @@
     "locale/*.json",
     "icon.svg",
     "cordis.patch.yml",
-    "README.md",
+    "README.md", "DEPLOY.md",
     "INSTALL.md"
   ],
   "scripts": {
     "verify": "node scripts/verify-endpoint.mjs",
     "verify:gui": "node scripts/verify-gui.mjs",
-    "test": "node scripts/test-host.mjs && node scripts/test-client.mjs"
+    "test": "node scripts/test-host.mjs && node scripts/test-client.mjs && node scripts/test-levels.mjs && node scripts/test-policy.mjs && node scripts/test-slaves.mjs"
   },
   "dsh": {
     "bundle": {
@@ -52,7 +52,10 @@
     "local-model",
     "ollama",
     "token-saving",
-    "delegation"
+    "delegation",
+    "agent-teams",
+    "slave-agents",
+    "workspace-policy"
   ],
   "license": "MIT"
 }

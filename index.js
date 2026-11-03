@@ -38,6 +38,9 @@ import {
   readConfig,
 } from './lib/config.js'
 import { createApiHandler, withResolvedKey } from './lib/api.js'
+import { levelOfAgent } from './lib/levels.js'
+import { createSlaveTeamsService, startSlaveActivation } from './lib/slaves.js'
+import { createLevelsPolicy } from './lib/policy.js'
 
 export { Config }
 
@@ -45,7 +48,7 @@ export const name = 'local-delegate'
 export const inject = ['tools']
 
 /** Reported by local_health, /localdoctor, the startup log line, and the GUI. */
-const PLUGIN_VERSION = '0.3.0'
+const PLUGIN_VERSION = '0.4.1'
 
 const TASKS = ['translate', 'summarize', 'extract', 'classify', 'rewrite', 'commit_message', 'names']
 
@@ -294,6 +297,32 @@ function resolveCheckedPath(config, cwd, target, label) {
   return absolute
 }
 
+/**
+ * Defense-in-depth level guard for the local_* tools.
+ *
+ * The scoped policy (lib/policy.js) already hides/blocks tools per level; this
+ * check runs inside each tool so a missing or stale scoped layer (custom preset,
+ * agent created before the policy, `levelsEnabled` changed without reinstall)
+ * cannot silently bypass L0/L1. Unknown agents resolve to null and are not
+ * guarded — behavior must stay identical to v0.3 when levels are default.
+ */
+function localLevelFor(ctx, config, exec) {
+  if (!exec || !exec.agent) return null
+  try {
+    const workspaceRegistry = typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : undefined
+    const info = levelOfAgent({ config, workspaceRegistry, agent: exec.agent })
+    return info && typeof info.level === 'string' ? info : null
+  } catch {
+    return null
+  }
+}
+
+function levelError(code, message) {
+  const error = new Error(`${code}: ${message}`)
+  error.code = code
+  return error
+}
+
 /** Run one transform over already-chunked text; returns the assembled result. */
 async function transformText(runtime, task, text, options, signal) {
   const config = runtime.config
@@ -343,9 +372,16 @@ async function transformText(runtime, task, text, options, signal) {
   }
 }
 
-async function executeTransform(runtime, ctx, exec, args) {
+export async function executeTransform(runtime, ctx, exec, args) {
   const config = runtime.refresh ? runtime.refresh() : runtime.config
   if (!config.enabled) throw new Error('LOCAL_DISABLED: the local-delegate plugin is disabled (enabled=false)')
+  const level = localLevelFor(ctx, config, exec)
+  if (level?.level === 'none') {
+    throw levelError(
+      'LOCAL_LEVEL_DISABLED',
+      'this workspace is set to level "none", so local_transform is disabled here; complete the work yourself without the local model',
+    )
+  }
   const task = typeof args.task === 'string' ? args.task : ''
   if (!TASKS.includes(task)) {
     throw new Error(`LOCAL_TASK_INVALID: "task" must be one of ${TASKS.join(', ')}`)
@@ -354,6 +390,13 @@ async function executeTransform(runtime, ctx, exec, args) {
   const hasText = typeof args.text === 'string' && args.text.length > 0
   if (hasPath === hasText) {
     throw new Error('LOCAL_SOURCE_INVALID: provide exactly one of "path" (preferred) or "text"')
+  }
+  if (level?.level === 'light' && hasText) {
+    throw levelError(
+      'LOCAL_LEVEL_GUARD',
+      `this workspace is at level "light", which only delegates files of at least ${config.lightMinChars} characters; ` +
+        'inline text is not allowed here. Write the text to a file and pass "path", or do the work yourself',
+    )
   }
   if (task === 'translate' && !(typeof args.target_language === 'string' && args.target_language.trim())) {
     throw new Error('LOCAL_TARGET_LANGUAGE_REQUIRED: task "translate" requires "target_language"')
@@ -373,6 +416,13 @@ async function executeTransform(runtime, ctx, exec, args) {
     const sourcePath = resolveCheckedPath(config, cwd, args.path, 'path')
     const stat = await fsp.stat(sourcePath).catch(() => undefined)
     if (!stat || !stat.isFile()) throw new Error(`LOCAL_SOURCE_MISSING: "${args.path}" is not a readable file`)
+    if (level?.level === 'light' && stat.size < config.lightMinChars) {
+      throw levelError(
+        'LOCAL_LEVEL_GUARD',
+        `this workspace is at level "light", which only delegates files of at least ${config.lightMinChars} characters ` +
+          `("${args.path}" is ${stat.size}); do this one yourself or switch the workspace level`,
+      )
+    }
     if (stat.size > config.maxSourceChars) {
       throw new Error(
         `LOCAL_SOURCE_TOO_LARGE: "${args.path}" is ${formatBytes(stat.size)}; the limit is ${formatBytes(config.maxSourceChars)}. ` +
@@ -464,15 +514,30 @@ async function executeTransform(runtime, ctx, exec, args) {
   }
 }
 
-async function executeBatch(runtime, ctx, exec, args) {
+export async function executeBatch(runtime, ctx, exec, args) {
   const config = runtime.refresh ? runtime.refresh() : runtime.config
   if (!config.enabled) throw new Error('LOCAL_DISABLED: the local-delegate plugin is disabled (enabled=false)')
+  const level = localLevelFor(ctx, config, exec)
+  if (level?.level === 'none') {
+    throw levelError(
+      'LOCAL_LEVEL_DISABLED',
+      'this workspace is set to level "none", so local_batch is disabled here; complete the work yourself without the local model',
+    )
+  }
   const task = typeof args.task === 'string' ? args.task : ''
   if (!TASKS.includes(task)) throw new Error(`LOCAL_TASK_INVALID: "task" must be one of ${TASKS.join(', ')}`)
   const paths = Array.isArray(args.paths) ? args.paths.filter((entry) => typeof entry === 'string' && entry.trim() !== '') : []
   if (paths.length === 0) throw new Error('LOCAL_PATHS_REQUIRED: provide a non-empty "paths" array')
   if (paths.length > config.maxBatchFiles) {
     throw new Error(`LOCAL_BATCH_TOO_LARGE: ${paths.length} files; the limit is ${config.maxBatchFiles}. Split the batch.`)
+  }
+  const dryRun = args.dry_run !== false
+  if (level?.level === 'light' && !dryRun && paths.length < config.lightMinFiles) {
+    throw levelError(
+      'LOCAL_LEVEL_GUARD',
+      `this workspace is at level "light", which only executes batches of at least ${config.lightMinFiles} files ` +
+        `(${paths.length} requested); dry runs are allowed. Add more files, do the work yourself, or switch the workspace level`,
+    )
   }
   if (task === 'translate' && !(typeof args.target_language === 'string' && args.target_language.trim())) {
     throw new Error('LOCAL_TARGET_LANGUAGE_REQUIRED: task "translate" requires "target_language"')
@@ -500,7 +565,6 @@ async function executeBatch(runtime, ctx, exec, args) {
     ? resolveCheckedPath(config, cwd, args.out_dir, 'out_dir')
     : nodePath.join(cwd, '.local-out')
   const relativeOut = displayPath(cwd, outDir)
-  const dryRun = args.dry_run !== false
 
   if (dryRun) {
     return {
@@ -735,6 +799,86 @@ function doctorText(runtime) {
   return lines.join('\n')
 }
 
+/** Live agents when the registry service is mounted; null when unavailable. */
+function listLiveAgents(ctx) {
+  try {
+    const registry = typeof ctx.get === 'function' ? ctx.get('agents') : undefined
+    if (!registry || typeof registry.list !== 'function') return null
+    const list = registry.list()
+    return Array.isArray(list) ? list.filter((agent) => agent && typeof agent === 'object') : null
+  } catch {
+    return null
+  }
+}
+
+/** Render the `/localpolicy` report: config summary plus every live agent's scoped state. */
+function policyText(runtime, ctx, policy) {
+  const config = runtime.refresh ? runtime.refresh() : runtime.config
+  const lines = []
+  lines.push(`Local delegate policy (plugin v${PLUGIN_VERSION})`)
+  lines.push(
+    `levels: enabled=${config.levelsEnabled}, default=${config.defaultLevel}, applyToLiveAgents=${config.applyToLiveAgents}`,
+  )
+  const workspaceKeys = config.workspaceLevels && typeof config.workspaceLevels === 'object' ? Object.keys(config.workspaceLevels) : []
+  if (workspaceKeys.length === 0) {
+    lines.push('workspace overrides: (none)')
+  } else {
+    lines.push('workspace overrides:')
+    for (const key of workspaceKeys.sort()) lines.push(`  - ${config.workspaceLevels[key]}: ${key}`)
+  }
+  const workerModel = config.workerRouteModel || config.endpoint.model || '(unset)'
+  lines.push(
+    `worker: provider=${config.workerProvider}, preset=${config.workerPreset}, route=${config.workerRouteProvider}/${workerModel}, ` +
+      `maxDepth=${config.workerMaxDepth}, fallback=${config.plannerFallback}`,
+  )
+  lines.push(
+    `thresholds: light >= ${config.lightMinChars} chars or >= ${config.lightMinFiles} files; high >= ${config.highMinChars} chars; ` +
+      `plannerAllowRead=${config.plannerAllowRead}`,
+  )
+  lines.push(
+    `slave teams: enabled=${config.slaveTeamsEnabled}` +
+      (config.slaveTeamsEnabled ? `, defaultNode=${config.slaveTeamDefaultNode || '(round-robin)'}, maxSlaves=${config.slaveTeamMaxSlaves}` : ''),
+  )
+  lines.push('')
+  const agents = listLiveAgents(ctx)
+  if (agents === null) {
+    lines.push('live agents: ctx.agents is not available; showing configuration only.')
+    return lines.join('\n')
+  }
+  if (agents.length === 0) {
+    lines.push('live agents: (none)')
+    return lines.join('\n')
+  }
+  lines.push(`live agents (${agents.length}):`)
+  for (const agent of agents) {
+    let info
+    try {
+      info = policy.describeAgent(agent)
+    } catch (error) {
+      lines.push(`- session ${String(agent?.session?.id ?? agent?.id ?? '?')}: describe failed: ${String(error?.message ?? error).slice(0, 200)}`)
+      continue
+    }
+    const role = info.teamRole && info.teamRole !== 'none' ? `, Team ${info.teamRole}` : ''
+    lines.push(`- session ${info.sessionId || '?'}: ${info.root ? 'root' : 'child'}${role} (${info.policyKind})`)
+    lines.push(
+      `  level: ${info.level} (source: ${info.source})${info.unmatched ? ' — workspace not matched; the default level applies' : ''}`,
+    )
+    const where = info.workspaceTitle || info.workspacePath || '(no workspace)'
+    lines.push(`  workspace: ${where}${info.workspaceTitle && info.workspacePath ? ` (${info.workspacePath})` : ''}`)
+    const installed = info.installed ?? {}
+    const parts = []
+    if (installed.prompt) parts.push('prompt override')
+    if (installed.levelContext) parts.push('level context')
+    if (installed.workerNote) parts.push('worker note')
+    if (installed.workerTool) parts.push('local_worker')
+    if (installed.slaveTeams) parts.push('slave tools')
+    lines.push(`  installed: ${parts.length > 0 ? parts.join(', ') : '(no scoped layer — v0.3 behavior)'}`)
+    if (installed.restrictDeny?.length > 0) lines.push(`  restrict deny: ${installed.restrictDeny.join(', ')}`)
+    if (info.slaveTeams?.enabled) lines.push(`  slave nodes: ${info.slaveTeams.nodes ?? 'unknown'}`)
+  }
+  return lines.join('\n')
+}
+
 /* ── plugin entry ─────────────────────────────────────────────────────── */
 
 const TOOL_OUTPUT_SCHEMA = { type: 'object' }
@@ -804,6 +948,7 @@ export function apply(ctx, rawConfig) {
         refresh: refreshConfig,
         version: PLUGIN_VERSION,
         log,
+        getWorkspaceRegistry: () => (typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : undefined),
       })
       scoped.effect(
         () => server.register({ kind: 'prefix', path: '/api/local-delegate', handler }),
@@ -961,6 +1106,20 @@ export function apply(ctx, rawConfig) {
     })
   }
 
+  // v0.4: per-workspace levels policy + SlaveAgentTeams scoped tools. The
+  // services are created here so commands can report their state; the policy
+  // starts after the global tools above exist (L0/L4 restriction needs their
+  // names) and is cleaned up through ctx.effect on unload/HMR.
+  const slaveTeams = createSlaveTeamsService({ ctx, getConfig: refreshConfig, log, stats: runtime.stats })
+  const policy = createLevelsPolicy({
+    ctx,
+    getConfig: refreshConfig,
+    getSlaveTeams: () => slaveTeams,
+    log,
+    stats: runtime.stats,
+    startSlaveActivation,
+  })
+
   const commands = ctx.get('commands')
   if (commands) {
     commands.register({
@@ -979,6 +1138,46 @@ export function apply(ctx, rawConfig) {
       description: 'Diagnose the local-delegate setup: endpoint chain, model availability, limits, and remediation steps',
       handler: () => ({ kind: 'success', text: doctorText(runtime) }),
     })
+    commands.register({
+      name: 'localpolicy',
+      description:
+        'Show the local AI involvement level policy: levels, workspace overrides, worker route, and the scoped policy installed on each live agent',
+      handler: () => {
+        try {
+          return { kind: 'success', text: policyText(runtime, ctx, policy) }
+        } catch (error) {
+          return { kind: 'error', text: `localpolicy failed: ${String(error?.message ?? error).slice(0, 300)}` }
+        }
+      },
+    })
+  }
+
+  if (config.enabled) {
+    try {
+      const started = policy.start()
+      if (started && typeof started.catch === 'function') {
+        started.catch((error) => log('warn', `levels policy initial install failed: ${String(error?.message ?? error).slice(0, 240)}`))
+      }
+    } catch (error) {
+      log('warn', `levels policy failed to start: ${String(error?.message ?? error).slice(0, 240)}`)
+    }
+    if (typeof ctx.effect === 'function') {
+      ctx.effect(
+        () => () => {
+          try {
+            policy.dispose()
+          } catch {
+            /* disposal must never break unload */
+          }
+          try {
+            slaveTeams.disposeAll()
+          } catch {
+            /* disposal must never break unload */
+          }
+        },
+        'local-delegate: policy',
+      )
+    }
   }
 
   if (config.enabled && config.warmupOnStart) {

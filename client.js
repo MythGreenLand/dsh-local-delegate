@@ -36,6 +36,56 @@ window.__ModuleLoader__.load({
     const SUBAGENT_NS = 'subagent-model-selection-settings'
     const ROUTE_PROVIDER = 'local-delegate'
 
+    /* ── 0.4.0 contract constants ────────────────────────────────────────── */
+
+    const LEVEL_VALUES = ['none', 'light', 'default', 'high', 'max']
+    const PLANNER_FALLBACK_VALUES = ['strong-worker', 'fail']
+    const SLAVE_KINDS = ['local', 'cloud']
+    const SLAVE_FALLBACK_VALUES = ['inherit', 'fail']
+    const SLAVE_TOOLS = [
+      'slave_team_spawn',
+      'slave_team_status',
+      'slave_team_wait',
+      'slave_team_send',
+      'slave_team_interrupt',
+    ]
+    const MAX_SLAVES = 8
+    const MAX_SLAVE_NODES = 12
+
+    /**
+     * v0.4 config fields written by buildOps, in the exact order required by
+     * the implementation contract (§9.3). `whole: true` fields are objects or
+     * arrays stored with one whole-value set op.
+     */
+    const V04_FIELDS = [
+      ['levelsEnabled', false],
+      ['defaultLevel', false],
+      ['workspaceLevels', true],
+      ['workerProvider', false],
+      ['workerPreset', false],
+      ['workerRouteProvider', false],
+      ['workerRouteModel', false],
+      ['workerMaxDepth', false],
+      ['lightMinChars', false],
+      ['lightMinFiles', false],
+      ['highMinChars', false],
+      ['plannerAllowRead', false],
+      ['plannerFallback', false],
+      ['plannerDenyExtra', true],
+      ['plannerAllowExtra', true],
+      ['applyToLiveAgents', false],
+      ['composerLevelPicker', false],
+      ['slaveTeamsEnabled', false],
+      ['slaveNodes', true],
+      ['slaveTeamDefaultNode', false],
+      ['slaveTeamProvider', false],
+      ['slaveTeamPreset', false],
+      ['slaveTeamMaxSlaves', false],
+      ['slaveTeamMaxDepth', false],
+      ['slaveTeamFallback', false],
+      ['slaveTeamPromptHelp', false],
+    ]
+
     const TASK_LABELS = {
       translate: 'translate',
       summarize: 'summarize',
@@ -143,6 +193,12 @@ window.__ModuleLoader__.load({
       statsEmpty: 'No delegated work yet. Run a translation or summary through local_transform.',
       statsSince: 'since',
       statsLastError: 'last error',
+      statsWorkers: 'local_worker starts',
+      statsWorkersFailed: 'worker failures',
+      statsSlaves: 'slaves started',
+      statsSlavesSettled: 'slaves settled',
+      statsSlavesFailed: 'slave failures',
+      statsByNode: 'slave starts by node',
       subagent: 'Use as a Subagent / model-picker route',
       subagentHint:
         'Registers this endpoint in the DSH model catalog as provider “local-delegate” (via llm-pi-ai) and allows that route for Subagent model selection. The Subagent policy is sampled when a new session is composed, so open a new session to use it.',
@@ -156,6 +212,117 @@ window.__ModuleLoader__.load({
       subagentDone: 'Route registered and allowed for Subagent.',
       subagentRemoved: 'Route removed from the model catalog and Subagent policy.',
       subagentFailed: 'The Host refused the route update; check the Models / Subagent pages for diagnostics.',
+      levels: 'Local AI involvement',
+      levelsHint:
+        'Applies per workspace on new sessions. Default = current behavior; High prefers the local model for mechanical chunks and exposes local_worker; Max makes the main agent plan only and hand every edit or command to local workers. Team teammates still run on the strong model. Turn on “Apply to live agents” to reinstall running sessions.',
+      levelsEnabled: 'Enable the level policy',
+      levelsEnabledHint: 'Off = every workspace resolves to “default” (v0.3 behavior) no matter what is selected below.',
+      levelsDefault: 'Default level',
+      levelsDefaultHint: 'Used for workspaces without an override and for sessions whose workspace cannot be matched.',
+      levelNone: 'None (no local model)',
+      levelLight: 'Light (long/batch work only)',
+      levelDefault: 'Default (current behavior)',
+      levelHigh: 'High (prefer local)',
+      levelMax: 'Max (plan only)',
+      levelsInherit: 'Follow default',
+      levelsWorkspaces: 'Workspaces',
+      levelsWorkspacesHint: 'Per-workspace overrides. Paths come from the Host canonical workspace registry; matching ignores case and slash style.',
+      levelsNoWorkspaces: 'No workspaces found (workspaceRegistry not mounted, or none open yet).',
+      levelsNoWorkspacesHint: 'Open a workspace in DSH, then refresh this list.',
+      levelsUnavailable: 'The Host does not serve /levels yet (older plugin version, or the workspace registry is unavailable).',
+      levelsRefresh: 'Refresh workspaces',
+      levelsLoadFailed: 'Workspace list failed: {error}',
+      levelsAdvanced: 'Advanced level settings',
+      levelsNeedsRoute: 'Level high/max needs the “local-delegate” route in llm-pi-ai. Click “Enable for Subagent” above first, then open a new session.',
+      levelsTeamNote: 'Agent Teams teammates still run on the strong model (DSH Team spawn takes no model parameter); only local workers are local.',
+      levelsDisabledNote: 'The level policy is off: every workspace resolves to “default” (v0.3 behavior).',
+      composerLevel: 'Show level picker in the composer',
+      composerLevelHint: 'Show a compact “Local AI involvement” picker in the composer tool row, next to the model / reasoning controls. It edits the current workspace override, or the default level when the session has no workspace.',
+      composerLevelShort: 'Local AI',
+      composerLevelTitle: 'Local AI involvement (current workspace)',
+      composerLevelMenuTitle: 'Local AI involvement',
+      composerLevelWorkspace: 'Workspace',
+      composerLevelDefaultMode: 'This session is not attached to a workspace — this edits the global default level.',
+      composerLevelInherit: 'Follow default',
+      composerLevelNewSession: 'Applies to new sessions.',
+      composerLevelConflict: 'The config changed in another editor; try again.',
+      composerLevelSaveFailed: 'Save failed: {error}',
+      levelsInvalid: 'Default level must be one of none/light/default/high/max.',
+      levelsInvalidWorkspace: 'Invalid workspace level for: ',
+      levelsThresholdInvalid: 'Thresholds must be positive integers.',
+      workerProvider: 'Worker subagent provider',
+      workerProviderHint: 'Subagent provider used to start local_worker children (default spawn).',
+      workerPreset: 'Worker agent preset',
+      workerPresetHint: 'Agent preset used by local_worker children (default standard).',
+      workerRouteProvider: 'Worker LLM route provider',
+      workerRouteProviderHint: 'LLM route of local workers (created by “Enable for Subagent”, default local-delegate).',
+      workerRouteModel: 'Worker route model',
+      workerRouteModelHint: 'Empty = use the endpoint model above.',
+      workerMaxDepth: 'Worker max depth',
+      workerMaxDepthHint: '1–5; how deep worker children may spawn.',
+      lightMinChars: 'Light min chars',
+      lightMinCharsHint: 'At level light, only files at least this large are delegated.',
+      lightMinFiles: 'Light min files',
+      lightMinFilesHint: 'At level light, a batch must contain at least this many files.',
+      highMinChars: 'High min chars',
+      highMinCharsHint: 'At level high, inline text of at least this size may be delegated.',
+      plannerAllowRead: 'At max, planners may read files',
+      plannerAllowReadHint: 'Keep read/glob/grep available for planning; turn off for the strictest isolation.',
+      plannerFallback: 'Planner worker failure',
+      plannerFallbackStrong: 'Retry with the strong model (costly, guarantees completion)',
+      plannerFallbackFail: 'Fail and return the error',
+      plannerDenyExtra: 'Extra denied tools (comma separated)',
+      plannerAllowExtra: 'Extra allowed tools (comma separated)',
+      plannerListHint: 'Comma-separated tool names, for example bash, write.',
+      applyToLiveAgents: 'Apply to live agents now',
+      applyToLiveAgentsHint: 'Reinstall scoped prompts/tools for running agents when settings change (may lose some prompt cache).',
+      slaveTeams: 'SlaveAgentTeams (multi-node parallel)',
+      slaveTeamsHint:
+        'Enable a node pool and five slave_team_* tools for root/Team-Lead agents: spawn several slave child agents in parallel, each on a local cheap model or a cloud route, then wait for and collect the results. Compatible with native Agent Teams: teammates stay on the strong model and slaves never appear in the team roster.',
+      slaveTeamsEnable: 'Enable SlaveAgentTeams tools',
+      slaveTeamsEnableHint: 'Only root agents (and Team Leads) receive the slave_team_* tools; child agents and teammates never do.',
+      slaveDisabledHint: 'Slave tools are off. The node pool below is saved but unused until enabled.',
+      slaveNodes: 'Slave nodes',
+      slaveNodesHint: 'Each node is an LLM route (provider/model) a slave can run on. Order is preserved; the default node overrides round-robin.',
+      slaveNodeName: 'Name',
+      slaveNodeNameHint: 'Unique name the agent uses to pick this node.',
+      slaveNodeKind: 'Kind',
+      slaveNodeLocal: 'local',
+      slaveNodeCloud: 'cloud',
+      slaveNodeProvider: 'Provider',
+      slaveNodeProviderHint: 'LLM route provider, e.g. local-delegate, intranet-gemma, deepseek-account.',
+      slaveNodeModel: 'Model',
+      slaveNodeModelHint: 'Empty = the route/endpoint default model.',
+      slaveNodeNote: 'Note',
+      slaveNodeNoteHint: 'Optional.',
+      slaveAddNode: 'Add node',
+      slaveRemoveNode: 'Remove node',
+      slaveFillLocal: 'Fill a local node from this endpoint',
+      slaveDefaultNode: 'Default node',
+      slaveRoundRobin: 'Round-robin',
+      slaveMaxSlaves: 'Max slaves per spawn',
+      slaveMaxSlavesHint: '1–8 (DSH default maxActiveSubagents is 8).',
+      slavePreset: 'Slave agent preset',
+      slaveFallback: 'Slave route failure',
+      slaveFallbackInherit: 'Inherit the parent model (retry)',
+      slaveFallbackFail: 'Fail with an actionable error',
+      slavePromptHelp: 'Inject SlaveAgentTeams guidance into the system prompt',
+      slaveProvider: 'Subagent provider',
+      slaveProviderHint: 'Subagent provider used to start slaves (default spawn).',
+      slaveMaxDepth: 'Slave max depth',
+      slaveMaxDepthHint: '1–5; slaves cannot spawn further slaves by default.',
+      slaveImplicitNode: 'No nodes configured: an implicit local node {node} is used. Set the endpoint model above.',
+      slaveRouteMissing: 'A local node uses provider “local-delegate”, but that route is not registered in llm-pi-ai. Click “Enable for Subagent” above first.',
+      slaveProviderUnregistered: 'Node “{name}” uses provider “{provider}”, which is not registered in llm-pi-ai. Register the route under Models first.',
+      slaveCompatNote:
+        'Coexists with native Agent Teams: no shared tool names, no global settings changed. Teammates keep the strong model; slaves are child agents, so they do not appear in the team roster and are not waited on by wait_agent.',
+      slaveToolsNote: 'Tools: slave_team_spawn · slave_team_status · slave_team_wait · slave_team_send · slave_team_interrupt',
+      slaveNameRequired: 'Every slave node needs a name.',
+      slaveNameDuplicate: 'Slave node names must be unique.',
+      slaveMaxRange: 'Max slaves must be between 1 and 8.',
+      slaveDepthRange: 'Depth must be between 1 and 5.',
+      slaveAdvanced: 'Advanced slave settings',
+      slaveNodeLimit: 'Only the first 12 nodes are used; extra nodes are ignored.',
       pid: 'Provider ID',
       configure: 'Configure',
       endpointSection: 'Endpoint',
@@ -257,6 +424,12 @@ window.__ModuleLoader__.load({
       statsEmpty: '还没有委派记录。用 local_transform 跑一次翻译或摘要即可看到统计。',
       statsSince: '统计起点',
       statsLastError: '最近错误',
+      statsWorkers: 'local_worker 启动数',
+      statsWorkersFailed: 'worker 失败数',
+      statsSlaves: 'slave 启动数',
+      statsSlavesSettled: 'slave 完成数',
+      statsSlavesFailed: 'slave 失败数',
+      statsByNode: '按节点统计的 slave 启动数',
       subagent: '作为 Subagent / 模型选择器路由',
       subagentHint:
         '把当前端点注册进 DSH 模型目录（通过 llm-pi-ai，provider 名为 local-delegate），并加入 Subagent 的可选模型。Subagent 策略在新建会话时采样，启用后请新开会话使用。',
@@ -270,6 +443,117 @@ window.__ModuleLoader__.load({
       subagentDone: '路由已注册，并已加入 Subagent 可选模型。',
       subagentRemoved: '已从模型目录与 Subagent 策略中移除该路由。',
       subagentFailed: 'Host 拒绝了路由更新，请到 Models / Subagent 页面查看诊断。',
+      levels: '本地 AI 介入程度',
+      levelsHint:
+        '按项目工作区生效，新会话开始时采样。默认 = 当前行为；更高 = 机械块优先交给本地模型并开放 local_worker；最高 = 主 agent 只做规划，所有修改/命令交给本地 worker。Agent Teams 的 teammate 仍使用强模型。需要立即作用于运行中的会话时，打开“立即应用到活动 agent”。',
+      levelsEnabled: '启用等级策略',
+      levelsEnabledHint: '关闭后所有工作区都按“默认”处理（等同 v0.3 行为），与下面的选择无关。',
+      levelsDefault: '默认等级',
+      levelsDefaultHint: '没有单独设置的工作区、以及无法匹配工作区的会话使用该等级。',
+      levelNone: '无（禁用本地模型）',
+      levelLight: '轻度（只委派长文档/批量）',
+      levelDefault: '默认（当前行为）',
+      levelHigh: '更高（优先本地）',
+      levelMax: '最高（只规划）',
+      levelsInherit: '跟随默认',
+      levelsWorkspaces: '工作区列表',
+      levelsWorkspacesHint: '按工作区单独覆盖。路径由 Host 的规范化工作区注册表提供；比较时忽略大小写与斜杠方向。',
+      levelsNoWorkspaces: '未找到工作区（workspaceRegistry 未挂载，或当前没有打开的工作区）。',
+      levelsNoWorkspacesHint: '在 DSH 中打开一个工作区后点“刷新工作区列表”。',
+      levelsUnavailable: 'Host 尚未提供 /levels 接口（插件版本过旧，或工作区注册表不可用）。',
+      levelsRefresh: '刷新工作区列表',
+      levelsLoadFailed: '工作区列表加载失败：{error}',
+      levelsAdvanced: '等级高级设置',
+      levelsNeedsRoute: '“更高/最高”需要 llm-pi-ai 里存在 local-delegate 路由。请先点上面的“启用为 Subagent 模型”，再新开会话。',
+      levelsTeamNote: 'Agent Teams 的 teammate 当前仍用强模型（DSH 的 Team spawn 不带模型参数），只有本地 worker 才是本地的。',
+      levelsDisabledNote: '等级策略已关闭：所有工作区都按“默认”处理（v0.3 行为）。',
+      composerLevel: '在输入框显示等级选择器',
+      composerLevelHint: '在输入框工具栏（模型 / 推理等级控件旁）显示紧凑的「本地 AI 介入程度」选择器：修改当前工作区的覆盖等级；会话未归属工作区时修改全局默认等级。',
+      composerLevelShort: '本地 AI',
+      composerLevelTitle: '本地 AI 介入程度（当前工作区）',
+      composerLevelMenuTitle: '本地 AI 介入程度',
+      composerLevelWorkspace: '工作区',
+      composerLevelDefaultMode: '当前会话未归属工作区 —— 这里修改的是全局默认等级。',
+      composerLevelInherit: '跟随默认',
+      composerLevelNewSession: '对新会话生效。',
+      composerLevelConflict: '配置已被其他编辑器改动，请重试。',
+      composerLevelSaveFailed: '保存失败：{error}',
+      levelsInvalid: '默认等级必须是 none/light/default/high/max 之一。',
+      levelsInvalidWorkspace: '以下工作区的等级不合法：',
+      levelsThresholdInvalid: '阈值必须是正整数。',
+      workerProvider: 'worker 子 agent provider',
+      workerProviderHint: '启动 local_worker 子 agent 使用的 Subagent provider（默认 spawn）。',
+      workerPreset: 'worker agent preset',
+      workerPresetHint: 'local_worker 子 agent 使用的 preset（默认 standard）。',
+      workerRouteProvider: 'worker LLM 路由 provider',
+      workerRouteProviderHint: '本地 worker 使用的 LLM 路由（由“启用为 Subagent 模型”创建，默认 local-delegate）。',
+      workerRouteModel: 'worker 路由模型',
+      workerRouteModelHint: '留空 = 使用上面的端点模型。',
+      workerMaxDepth: 'worker 最大深度',
+      workerMaxDepthHint: '1–5；worker 子 agent 还能再派生的层数。',
+      lightMinChars: '轻度最小字符数',
+      lightMinCharsHint: '“轻度”等级下，文件至少这么大才允许委派。',
+      lightMinFiles: '轻度最小文件数',
+      lightMinFilesHint: '“轻度”等级下，批量任务至少包含这么多文件才允许委派。',
+      highMinChars: '更高最小字符数',
+      highMinCharsHint: '“更高”等级下，内联文本达到该长度才允许委派。',
+      plannerAllowRead: '最高等级允许 planner 读文件',
+      plannerAllowReadHint: '保留 read/glob/grep 供规划使用；关闭后隔离最严格。',
+      plannerFallback: 'planner worker 失败时',
+      plannerFallbackStrong: '改用强模型重试（成本上升，保证完成）',
+      plannerFallbackFail: '直接失败并返回错误',
+      plannerDenyExtra: '额外禁用的工具（逗号分隔）',
+      plannerAllowExtra: '额外允许的工具（逗号分隔）',
+      plannerListHint: '逗号分隔的工具名，例如 bash, write。',
+      applyToLiveAgents: '立即应用到活动 agent',
+      applyToLiveAgentsHint: '设置变化时对运行中的 agent 重装 scoped 提示词/工具（可能损失部分 prompt 缓存）。',
+      slaveTeams: 'SlaveAgentTeams（多从节点并行）',
+      slaveTeamsHint:
+        '打开后，root/Team Lead agent 会获得节点池与 5 个 slave_team_* 工具：一次并行启动多个 slave 子 agent，每个跑在本地廉价模型或云端路由上，再由 master 等待/汇总结果。与原生 Agent Teams 兼容：teammate 仍用强模型，slave 不会出现在 team 名单里。',
+      slaveTeamsEnable: '启用 SlaveAgentTeams 工具',
+      slaveTeamsEnableHint: '只有 root agent（及 Team Lead）会拿到 slave_team_* 工具；child agent 与 teammate 永远不装。',
+      slaveDisabledHint: 'Slave 工具当前关闭。下面的节点池会保存，但启用前不会生效。',
+      slaveNodes: '从节点列表',
+      slaveNodesHint: '每个节点是一条 LLM 路由（provider/model）。顺序即配置顺序；设置了默认节点时优先用默认节点，否则轮询。',
+      slaveNodeName: '名称',
+      slaveNodeNameHint: 'agent 选择节点时使用的唯一名称。',
+      slaveNodeKind: '类型',
+      slaveNodeLocal: '本地',
+      slaveNodeCloud: '云端',
+      slaveNodeProvider: 'Provider',
+      slaveNodeProviderHint: 'LLM 路由 provider，例如 local-delegate、intranet-gemma、deepseek-account。',
+      slaveNodeModel: '模型',
+      slaveNodeModelHint: '留空 = 使用该路由/端点的默认模型。',
+      slaveNodeNote: '备注',
+      slaveNodeNoteHint: '可选。',
+      slaveAddNode: '添加节点',
+      slaveRemoveNode: '删除节点',
+      slaveFillLocal: '用本地端点填充一个本地节点',
+      slaveDefaultNode: '默认节点',
+      slaveRoundRobin: '轮询',
+      slaveMaxSlaves: '单次最多 slave 数',
+      slaveMaxSlavesHint: '1–8（DSH 默认 maxActiveSubagents = 8）。',
+      slavePreset: 'slave agent preset',
+      slaveFallback: 'slave 路由失败时',
+      slaveFallbackInherit: '继承父模型重试',
+      slaveFallbackFail: '直接报可操作错误',
+      slavePromptHelp: '向系统提示词注入 SlaveAgentTeams 指引',
+      slaveProvider: 'Subagent provider',
+      slaveProviderHint: '启动 slave 使用的 Subagent provider（默认 spawn）。',
+      slaveMaxDepth: 'slave 最大深度',
+      slaveMaxDepthHint: '1–5；默认 slave 不能再派生 slave。',
+      slaveImplicitNode: '未配置节点：将使用隐式本地节点 {node}。请先在上面设置端点模型。',
+      slaveRouteMissing: '有本地节点使用 provider “local-delegate”，但该路由尚未注册到 llm-pi-ai。请先点上面的“启用为 Subagent 模型”。',
+      slaveProviderUnregistered: '节点“{name}”使用的 provider “{provider}”尚未在 llm-pi-ai 注册，请先在 Models 页注册该路由。',
+      slaveCompatNote:
+        '与原生 Agent Teams 共存：不注册同名工具、不修改任何全局设置。teammate 继续用强模型；slave 是子 agent，不会出现在 team 名单，也不会被 wait_agent 等待。',
+      slaveToolsNote: '工具：slave_team_spawn · slave_team_status · slave_team_wait · slave_team_send · slave_team_interrupt',
+      slaveNameRequired: '每个从节点都必须填写名称。',
+      slaveNameDuplicate: '从节点名称必须唯一。',
+      slaveMaxRange: '单次最多 slave 数必须在 1–8 之间。',
+      slaveDepthRange: '深度必须在 1–5 之间。',
+      slaveAdvanced: 'slave 高级设置',
+      slaveNodeLimit: '最多只使用前 12 个节点，多余的会被忽略。',
       pid: 'Provider ID',
       configure: '配置',
       endpointSection: '端点',
@@ -323,8 +607,34 @@ window.__ModuleLoader__.load({
 .ld_inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .ld_check{display:flex;gap:8px;align-items:flex-start;font-size:12.5px}
 .ld_check input{margin-top:2px}
+.ld_levelrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}
+.ld_levelrow .ld_grow{flex:1 1 320px;min-width:220px}
+.ld_levelrow select{max-width:220px;font:inherit;color:inherit;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:7px 9px}
+.ld_name{font-weight:500}
+.ld_nodes{display:flex;flex-direction:column;gap:10px}
+.ld_node{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px dashed var(--dsw-alias-border-l2);border-radius:10px}
+.ld_node .ld_row{gap:10px}
+.ld_node_head{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ld_node_head .ld_small{flex:1;min-width:160px}
+.ld_chips{display:flex;flex-wrap:wrap;gap:6px}
+.ld_chip{font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
 .ld_savebar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding-top:4px}
 .ld_savebar .grow{flex:1}
+.ld_composer{position:relative;display:inline-flex;align-items:center;gap:4px;min-width:0}
+.ld_composer_trigger{border-radius:var(--dsw-radius-sm);min-width:0;max-width:min(240px,38cqw);height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;outline:none;align-items:center;gap:4px;padding:0 4px 0 8px;font:inherit;font-size:13px;font-weight:400;line-height:20px;display:flex}
+.ld_composer_trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.ld_composer_trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}
+.ld_composer_trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}
+.ld_composer_label{white-space:nowrap;flex:none}
+.ld_composer_value{text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--dsw-alias-label-caption);flex-shrink:1000;overflow:hidden}
+.ld_composer_chevron{color:var(--dsw-alias-label-caption);flex:none;font-size:10px}
+.ld_composer_err{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:1}
+.ld_composer_menu{z-index:1100;width:max-content;min-width:min(240px,100vw - 32px);max-width:min(380px,100vw - 32px);max-height:min(360px,100vh - 96px);background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-primary);flex-direction:column;gap:2px;padding:4px;display:flex;position:fixed;overflow:hidden}
+.ld_composer_head{padding:6px 8px 4px;font-size:11.5px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.ld_composer_note{padding:2px 8px 6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.ld_composer_item{box-sizing:border-box;width:auto;min-width:100%;min-height:34px;color:inherit;text-align:left;cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-md);outline:none;align-items:center;gap:6px;padding:5px 8px;font:inherit;font-size:13px;line-height:20px;display:flex}
+.ld_composer_item:hover:not(:disabled),.ld_composer_item:focus-visible,.ld_composer_item.on{background:var(--dsw-alias-interactive-bg-hover)}
+.ld_composer_check{color:var(--dsw-alias-label-primary);flex:0 0 14px;place-items:center;display:grid;font-size:12px}
 `
 
     /* ── helpers ─────────────────────────────────────────────────────────── */
@@ -356,6 +666,160 @@ window.__ModuleLoader__.load({
         node = node[key]
       }
       return node === undefined ? fallback : node
+    }
+
+    /* ── 0.4.0 pure helpers (also exported through __test) ───────────────── */
+
+    function parseLevel(value) {
+      const level = String(value || '')
+      return LEVEL_VALUES.includes(level) ? level : 'default'
+    }
+
+    function listToText(value) {
+      return Array.isArray(value) ? value.filter(entry => typeof entry === 'string' && entry.trim()).join(', ') : ''
+    }
+
+    function textToList(text) {
+      return String(text === undefined || text === null ? '' : text)
+        .split(',')
+        .map(entry => entry.trim())
+        .filter(Boolean)
+    }
+
+    function normalizePathKey(value) {
+      return String(value || '')
+        .replace(/\\/g, '/')
+        .replace(/\/+$/, '')
+        .toLowerCase()
+    }
+
+    function findWorkspaceLevel(workspaceLevels, workspacePath) {
+      if (!workspaceLevels || typeof workspaceLevels !== 'object') return ''
+      const target = normalizePathKey(workspacePath)
+      if (!target) return ''
+      for (const [key, value] of Object.entries(workspaceLevels)) {
+        if (normalizePathKey(key) === target) return parseLevel(value)
+      }
+      return ''
+    }
+
+    function withWorkspaceLevel(workspaceLevels, workspacePath, level) {
+      const next = { ...(workspaceLevels && typeof workspaceLevels === 'object' ? workspaceLevels : {}) }
+      const target = normalizePathKey(workspacePath)
+      for (const key of Object.keys(next)) {
+        if (normalizePathKey(key) === target) delete next[key]
+      }
+      const value = String(level || '')
+      if (LEVEL_VALUES.includes(value) && String(workspacePath || '').trim()) next[String(workspacePath)] = value
+      return next
+    }
+
+    /* ── composer level picker helpers (0.4.1) ──────────────────────────── */
+
+    /** Find the WorkspaceView whose sessionIds account includes one session. */
+    function resolveComposerWorkspace(workspaces, sessionId) {
+      const list = Array.isArray(workspaces) ? workspaces : []
+      const id = String(sessionId || '')
+      if (!id) return null
+      for (const workspace of list) {
+        if (!workspace || typeof workspace !== 'object') continue
+        const sessionIds = Array.isArray(workspace.sessionIds) ? workspace.sessionIds : []
+        if (sessionIds.includes(id)) return workspace
+      }
+      return null
+    }
+
+    /**
+     * Pure view model for the composer picker. Returns null when the feature or
+     * the level policy is off, so the component renders nothing.
+     */
+    function composerLevelModel(config, workspace, t) {
+      const source = config && typeof config === 'object' ? config : {}
+      if (source.levelsEnabled === false || source.composerLevelPicker === false) return null
+      const defaultLevel = parseLevel(source.defaultLevel)
+      const workspacePath = workspace && typeof workspace.path === 'string' ? workspace.path : ''
+      const override = workspacePath ? findWorkspaceLevel(source.workspaceLevels, workspacePath) : ''
+      const value = override || defaultLevel
+      const inheritOption = workspacePath
+        ? { value: '', label: t('composerLevelInherit') + ' · ' + levelOptionLabel(t, defaultLevel) }
+        : null
+      const options = (inheritOption ? [inheritOption] : []).concat(levelSelectOptions(t))
+      return {
+        mode: workspacePath ? 'workspace' : 'default',
+        workspacePath,
+        workspaceLabel: workspace ? String(workspace.title || workspacePath || '') : '',
+        defaultLevel,
+        override,
+        value,
+        options,
+      }
+    }
+
+    function buildSlaveNode(overrides) {
+      return { name: '', kind: 'local', provider: ROUTE_PROVIDER, model: '', note: '', ...(overrides || {}) }
+    }
+
+    function uniqueSlaveName(nodes, base) {
+      const used = new Set(
+        (Array.isArray(nodes) ? nodes : [])
+          .map(node => String((node && node.name) || '').trim())
+          .filter(Boolean),
+      )
+      if (!used.has(base)) return base
+      for (let index = 2; index < 100; index += 1) {
+        if (!used.has(base + index)) return base + index
+      }
+      return base + 'x'
+    }
+
+    /** Turn llm-pi-ai `providers` into a stable catalog for the datalists. */
+    function providerCatalog(providers) {
+      if (!providers || typeof providers !== 'object') return []
+      const catalog = []
+      for (const [rawId, value] of Object.entries(providers)) {
+        const id = String(rawId || '').trim()
+        if (!id) continue
+        const models = Array.isArray(value && value.models)
+          ? value.models
+              .map(model => (typeof model === 'string' ? model : model && (model.id || model.model)) || '')
+              .map(String)
+              .filter(Boolean)
+          : []
+        catalog.push({ id, models })
+      }
+      catalog.sort((a, b) => a.id.localeCompare(b.id))
+      return catalog
+    }
+
+    function nodesOf(config) {
+      return Array.isArray(config && config.slaveNodes)
+        ? config.slaveNodes.filter(node => node && typeof node === 'object')
+        : []
+    }
+
+    function usesHighOrMax(config, workspaces) {
+      if (config && config.levelsEnabled === false) return false
+      if (parseLevel(config && config.defaultLevel) === 'high' || parseLevel(config && config.defaultLevel) === 'max') return true
+      return (Array.isArray(workspaces) ? workspaces : []).some(workspace => {
+        const value = findWorkspaceLevel(config && config.workspaceLevels, workspace && workspace.path) || parseLevel(workspace && workspace.level)
+        return value === 'high' || value === 'max'
+      })
+    }
+
+    function levelOptionLabel(t, level) {
+      return level === 'none'
+        ? t('levelNone')
+        : level === 'light'
+          ? t('levelLight')
+          : level === 'default'
+            ? t('levelDefault')
+            : level === 'high'
+              ? t('levelHigh')
+              : t('levelMax')
+    }
+
+    function levelSelectOptions(t) {
+      return LEVEL_VALUES.map(level => ({ value: level, label: levelOptionLabel(t, level) }))
     }
 
     function fmt(n) {
@@ -398,11 +862,12 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function TextInput({ value, onChange, disabled, placeholder, type }) {
+    function TextInput({ value, onChange, disabled, placeholder, type, list }) {
       return h('input', {
         type: type || 'text',
         value: value === undefined || value === null ? '' : String(value),
         placeholder: placeholder || '',
+        list: list || undefined,
         disabled: Boolean(disabled),
         onChange: event => onChange(event.target.value),
         spellCheck: false,
@@ -475,6 +940,9 @@ window.__ModuleLoader__.load({
       const [statusError, setStatusError] = useState('')
       const [probe, setProbe] = useState(null)
       const [models, setModels] = useState([])
+      const [levelsInfo, setLevelsInfo] = useState(null)
+      const [levelsError, setLevelsError] = useState('')
+      const [listText, setListText] = useState(null)
 
       useEffect(() => {
         dirtyRef.current = dirty
@@ -484,6 +952,7 @@ window.__ModuleLoader__.load({
         if (snap.status !== 'ready') return
         if (dirtyRef.current) return
         setDraft(clone(snap.value))
+        setListText(null)
       }, [snap.status, snap.revision])
 
       const saved = snap.status === 'ready' ? snap.value : null
@@ -501,9 +970,20 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      const refreshLevels = useCallback(async () => {
+        try {
+          const payload = await apiFetch('/levels')
+          setLevelsInfo(payload)
+          setLevelsError('')
+        } catch (error) {
+          setLevelsError(String(error?.message ?? error))
+        }
+      }, [])
+
       useEffect(() => {
         void refreshStatus()
-      }, [refreshStatus])
+        void refreshLevels()
+      }, [refreshLevels, refreshStatus])
 
       const update = useCallback((path, value) => {
         setDraft(prev => setIn(prev || {}, path, value))
@@ -524,6 +1004,75 @@ window.__ModuleLoader__.load({
         setMessage(null)
       }, [])
 
+      /* ── 0.4.0 draft editors ───────────────────────────────────────────── */
+
+      const listValue = useCallback(
+        field => (listText && Object.prototype.hasOwnProperty.call(listText, field) ? listText[field] : listToText(current[field])),
+        [current, listText],
+      )
+
+      const setListField = useCallback(
+        (field, text) => {
+          setListText(prev => ({ ...(prev || {}), [field]: text }))
+          update([field], textToList(text))
+        },
+        [update],
+      )
+
+      const setWorkspaceLevel = useCallback((workspacePath, level) => {
+        setDraft(prev => ({ ...(prev || {}), workspaceLevels: withWorkspaceLevel(prev && prev.workspaceLevels, workspacePath, level) }))
+        setDirty(true)
+        setMessage(null)
+      }, [])
+
+      const setNode = useCallback((index, key, value) => {
+        setDraft(prev => {
+          const base = prev || {}
+          const nodes = Array.isArray(base.slaveNodes) ? base.slaveNodes.slice() : []
+          nodes[index] = { ...(nodes[index] || {}), [key]: value }
+          return { ...base, slaveNodes: nodes }
+        })
+        setDirty(true)
+        setMessage(null)
+      }, [])
+
+      const addNode = useCallback(() => {
+        setDraft(prev => {
+          const base = prev || {}
+          const nodes = Array.isArray(base.slaveNodes) ? base.slaveNodes.slice() : []
+          nodes.push(buildSlaveNode({ name: uniqueSlaveName(nodes, 'local') }))
+          return { ...base, slaveNodes: nodes }
+        })
+        setDirty(true)
+        setMessage(null)
+      }, [])
+
+      const removeNode = useCallback(index => {
+        setDraft(prev => {
+          const base = prev || {}
+          const nodes = Array.isArray(base.slaveNodes) ? base.slaveNodes.slice() : []
+          nodes.splice(index, 1)
+          return { ...base, slaveNodes: nodes }
+        })
+        setDirty(true)
+        setMessage(null)
+      }, [])
+
+      const fillLocalNode = useCallback(() => {
+        setDraft(prev => {
+          const base = prev || {}
+          const nodes = Array.isArray(base.slaveNodes) ? base.slaveNodes.slice() : []
+          const model = String((saved && saved.endpoint && saved.endpoint.model) || (base.endpoint && base.endpoint.model) || '').trim()
+          const node = buildSlaveNode({ name: 'local', kind: 'local', provider: ROUTE_PROVIDER, model })
+          const existing = nodes.findIndex(entry => entry && String(entry.name || '').trim() === 'local')
+          if (existing >= 0) nodes[existing] = node
+          else nodes.push(node)
+          return { ...base, slaveNodes: nodes }
+        })
+        setDirty(true)
+        setMessage(null)
+      }, [saved])
+
       const validate = useCallback(() => {
         if (!endpoint.baseURL || !/^https?:\/\/[^\s]+$/i.test(String(endpoint.baseURL))) {
           return { kind: 'err', text: t('baseURLHint') }
@@ -540,8 +1089,38 @@ window.__ModuleLoader__.load({
             if (typeof value !== 'string') return { kind: 'err', text: t('headersHint') }
           }
         }
+        if (!LEVEL_VALUES.includes(String(current.defaultLevel || 'default'))) {
+          return { kind: 'err', text: t('levelsInvalid') }
+        }
+        if (current.workspaceLevels && typeof current.workspaceLevels === 'object' && !Array.isArray(current.workspaceLevels)) {
+          for (const [key, value] of Object.entries(current.workspaceLevels)) {
+            if (!LEVEL_VALUES.includes(String(value))) return { kind: 'err', text: t('levelsInvalidWorkspace') + key }
+          }
+        }
+        for (const field of ['lightMinChars', 'lightMinFiles', 'highMinChars']) {
+          if (current[field] === undefined) continue
+          const value = Number(current[field])
+          if (!Number.isFinite(value) || value <= 0 || Math.floor(value) !== value) return { kind: 'err', text: t('levelsThresholdInvalid') }
+        }
+        for (const field of ['workerMaxDepth', 'slaveTeamMaxDepth']) {
+          if (current[field] === undefined) continue
+          const value = Number(current[field])
+          if (!Number.isFinite(value) || value < 1 || value > 5) return { kind: 'err', text: t('slaveDepthRange') }
+        }
+        if (current.slaveTeamMaxSlaves !== undefined) {
+          const value = Number(current.slaveTeamMaxSlaves)
+          if (!Number.isFinite(value) || value < 1 || value > MAX_SLAVES) return { kind: 'err', text: t('slaveMaxRange') }
+        }
+        const nodeNames = new Set()
+        for (const node of nodesOf(current)) {
+          const name = String(node.name || '').trim()
+          if (!name) return { kind: 'err', text: t('slaveNameRequired') }
+          const key = name.toLowerCase()
+          if (nodeNames.has(key)) return { kind: 'err', text: t('slaveNameDuplicate') + ' (' + name + ')' }
+          nodeNames.add(key)
+        }
         return null
-      }, [endpoint, fallbacks, t])
+      }, [current, endpoint, fallbacks, t])
 
       const save = useCallback(async () => {
         if (!saved || !draft) return
@@ -567,16 +1146,18 @@ window.__ModuleLoader__.load({
           setDirty(false)
           setMessage({ kind: 'ok', text: t('saved') })
           void refreshStatus()
+          void refreshLevels()
         } catch (error) {
           setMessage({ kind: 'err', text: t('saveFailed') + ' ' + String(error?.message ?? error) })
         } finally {
           setBusy('')
         }
-      }, [draft, form, refreshStatus, saved, snap.revision, t, validate])
+      }, [draft, form, refreshLevels, refreshStatus, saved, snap.revision, t, validate])
 
       const discard = useCallback(() => {
         if (!saved) return
         setDraft(clone(saved))
+        setListText(null)
         setDirty(false)
         setMessage(null)
       }, [saved])
@@ -584,6 +1165,7 @@ window.__ModuleLoader__.load({
       const resetAll = useCallback(() => {
         if (!snap.base) return
         setDraft(clone(snap.base))
+        setListText(null)
         setDirty(true)
         setMessage({ kind: 'warn', text: t('resetAll') })
       }, [snap.base, t])
@@ -616,6 +1198,7 @@ window.__ModuleLoader__.load({
       const piReady = piSnap.status === 'ready'
       const subReady = subSnap.status === 'ready'
       const routeRegistered = Boolean(piReady && piSnap.value && piSnap.value.providers && piSnap.value.providers[ROUTE_PROVIDER])
+      const piProviders = piReady ? providerCatalog(piSnap.value && piSnap.value.providers) : []
       const subAllowed = Boolean(
         subReady &&
           subSnap.value &&
@@ -996,6 +1579,36 @@ window.__ModuleLoader__.load({
           savedEndpoint: saved.endpoint,
         }),
 
+        h(LevelsCard, {
+          t,
+          current,
+          disabled,
+          update,
+          levelsInfo,
+          levelsError,
+          onRefreshLevels: refreshLevels,
+          routeRegistered,
+          endpointModel: String((saved.endpoint && saved.endpoint.model) || '').trim(),
+          listValue,
+          onListChange: setListField,
+          onWorkspaceLevel: setWorkspaceLevel,
+        }),
+
+        h(SlaveTeamsCard, {
+          t,
+          current,
+          disabled,
+          update,
+          piReady,
+          providers: piProviders,
+          routeRegistered,
+          endpointModel: String((saved.endpoint && saved.endpoint.model) || '').trim(),
+          onSetNode: setNode,
+          onAddNode: addNode,
+          onRemoveNode: removeNode,
+          onFillLocalNode: fillLocalNode,
+        }),
+
         h(StatsCard, { t, stats, onRefresh: refreshStatus }),
 
         h(
@@ -1015,9 +1628,11 @@ window.__ModuleLoader__.load({
     }
 
     function buildOps(saved, draft) {
+      const base = saved || {}
+      const next = draft || {}
       const ops = []
-      if (!deepEqual(saved.endpoint, draft.endpoint)) ops.push({ op: 'set', path: ['endpoint'], value: draft.endpoint })
-      if (!deepEqual(saved.fallbackEndpoints, draft.fallbackEndpoints)) ops.push({ op: 'set', path: ['fallbackEndpoints'], value: draft.fallbackEndpoints })
+      if (!deepEqual(base.endpoint, next.endpoint)) ops.push({ op: 'set', path: ['endpoint'], value: next.endpoint })
+      if (!deepEqual(base.fallbackEndpoints, next.fallbackEndpoints)) ops.push({ op: 'set', path: ['fallbackEndpoints'], value: next.fallbackEndpoints })
       for (const field of [
         'retries',
         'chunkChars',
@@ -1032,9 +1647,20 @@ window.__ModuleLoader__.load({
         'warmupOnStart',
         'probeAllowPublic',
       ]) {
-        if (!deepEqual(saved[field], draft[field])) ops.push({ op: 'set', path: [field], value: draft[field] })
+        if (!deepEqual(base[field], next[field])) ops.push({ op: 'set', path: [field], value: next[field] })
       }
-      if (!deepEqual(saved.modelsByTask, draft.modelsByTask)) ops.push({ op: 'set', path: ['modelsByTask'], value: draft.modelsByTask })
+      if (!deepEqual(base.modelsByTask, next.modelsByTask)) ops.push({ op: 'set', path: ['modelsByTask'], value: next.modelsByTask })
+      // 0.4.0 fields: stable order per the implementation contract (§9.3).
+      for (const [field, whole] of V04_FIELDS) {
+        const emptyValue = field === 'workspaceLevels' ? {} : []
+        const before = base[field] === undefined ? emptyValue : base[field]
+        const after = next[field] === undefined ? emptyValue : next[field]
+        if (whole) {
+          if (!deepEqual(before, after)) ops.push({ op: 'set', path: [field], value: clone(after) })
+        } else if (next[field] !== undefined && !deepEqual(base[field], next[field])) {
+          ops.push({ op: 'set', path: [field], value: next[field] })
+        }
+      }
       return ops
     }
 
@@ -1147,7 +1773,531 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /* ── 0.4.0: local AI involvement levels ──────────────────────────────── */
+
+    function LevelsCard({
+      t,
+      current,
+      disabled,
+      update,
+      levelsInfo,
+      levelsError,
+      onRefreshLevels,
+      routeRegistered,
+      endpointModel,
+      listValue,
+      onListChange,
+      onWorkspaceLevel,
+    }) {
+      const config = current || {}
+      const levelsEnabled = config.levelsEnabled !== false
+      const defaultLevel = parseLevel(config.defaultLevel)
+      const workspaces = levelsInfo && Array.isArray(levelsInfo.workspaces) ? levelsInfo.workspaces : []
+      const levelsUnavailable = Boolean(levelsInfo && levelsInfo.unavailable)
+      const routeWarning = usesHighOrMax(config, workspaces) && !routeRegistered
+      const workspaceRows = workspaces.map((workspace, index) => {
+        const workspacePath = String((workspace && workspace.path) || '')
+        const override = findWorkspaceLevel(config.workspaceLevels, workspacePath)
+        const title = String((workspace && workspace.title) || workspacePath || '(workspace)')
+        const options = [{ value: '', label: t('levelsInherit') + ' · ' + levelOptionLabel(t, defaultLevel) }].concat(levelSelectOptions(t))
+        return h(
+          'div',
+          { className: 'ld_levelrow', key: workspacePath || 'workspace-' + index },
+          h(
+            'div',
+            { className: 'ld_grow' },
+            h('div', { className: 'ld_name' }, title),
+            h('div', { className: 'ld_small' }, workspacePath || '(no path)'),
+          ),
+          h(Select, {
+            value: override,
+            disabled: disabled || !workspacePath,
+            options,
+            onChange: value => onWorkspaceLevel(workspacePath, value),
+          }),
+        )
+      })
+      return h(
+        'section',
+        { className: 'ld_card' },
+        h('h3', null, t('levels')),
+        h('div', { className: 'ld_small' }, t('levelsHint')),
+        h(
+          'div',
+          { className: 'ld_row' },
+          h(
+            Field,
+            { label: t('levelsDefault'), hint: t('levelsDefaultHint') },
+            h(Select, {
+              value: defaultLevel,
+              disabled,
+              options: levelSelectOptions(t),
+              onChange: value => update(['defaultLevel'], value),
+            }),
+          ),
+          h(
+            Field,
+            { label: t('levelsEnabled'), hint: t('levelsEnabledHint') },
+            h(Checkbox, {
+              checked: levelsEnabled,
+              disabled,
+              label: t('levelsEnabled'),
+              onChange: value => update(['levelsEnabled'], value),
+            }),
+          ),
+          h(
+            Field,
+            { label: t('composerLevel'), hint: t('composerLevelHint') },
+            h(Checkbox, {
+              checked: config.composerLevelPicker !== false,
+              disabled,
+              label: t('composerLevel'),
+              onChange: value => update(['composerLevelPicker'], value),
+            }),
+          ),
+        ),
+        !levelsEnabled ? h('div', { className: 'ld_msg warn' }, t('levelsDisabledNote')) : null,
+        routeWarning ? h('div', { className: 'ld_msg warn' }, t('levelsNeedsRoute')) : null,
+        h('div', { className: 'ld_small' }, t('levelsTeamNote')),
+        h(
+          'div',
+          { className: 'ld_head', style: { marginTop: '4px' } },
+          h('h3', null, t('levelsWorkspaces')),
+          h('span', { className: 'grow' }),
+          h(
+            'button',
+            { type: 'button', className: 'ld_btn', disabled, onClick: () => void onRefreshLevels() },
+            t('levelsRefresh'),
+          ),
+        ),
+        h('div', { className: 'ld_small' }, t('levelsWorkspacesHint')),
+        levelsError ? h('div', { className: 'ld_msg err' }, format(t('levelsLoadFailed'), { error: levelsError })) : null,
+        levelsUnavailable ? h('div', { className: 'ld_msg warn' }, t('levelsUnavailable')) : null,
+        workspaceRows.length > 0
+          ? h('div', { className: 'ld_nodes' }, workspaceRows)
+          : h('div', { className: 'ld_msg' }, t('levelsNoWorkspaces') + ' ' + t('levelsNoWorkspacesHint')),
+        h(
+          'details',
+          { className: 'ld_fold' },
+          h('summary', null, t('levelsAdvanced')),
+          h(
+            'div',
+            { className: 'ld_row', style: { marginTop: '10px' } },
+            h(
+              Field,
+              { label: t('workerPreset'), hint: t('workerPresetHint') },
+              h(TextInput, {
+                value: config.workerPreset,
+                disabled,
+                placeholder: 'standard',
+                onChange: value => update(['workerPreset'], value),
+              }),
+            ),
+            h(
+              Field,
+              { label: t('workerProvider'), hint: t('workerProviderHint') },
+              h(TextInput, {
+                value: config.workerProvider,
+                disabled,
+                placeholder: 'spawn',
+                onChange: value => update(['workerProvider'], value),
+              }),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'ld_row', style: { marginTop: '10px' } },
+            h(
+              Field,
+              { label: t('workerRouteProvider'), hint: t('workerRouteProviderHint') },
+              h(TextInput, {
+                value: config.workerRouteProvider,
+                disabled,
+                placeholder: ROUTE_PROVIDER,
+                onChange: value => update(['workerRouteProvider'], value),
+              }),
+            ),
+            h(
+              Field,
+              { label: t('workerRouteModel'), hint: t('workerRouteModelHint') },
+              h(TextInput, {
+                value: config.workerRouteModel,
+                disabled,
+                placeholder: endpointModel || '(endpoint model)',
+                onChange: value => update(['workerRouteModel'], value),
+              }),
+            ),
+            h(
+              Field,
+              { label: t('workerMaxDepth'), hint: t('workerMaxDepthHint') },
+              h(NumberInput, {
+                value: config.workerMaxDepth,
+                disabled,
+                min: 1,
+                max: 5,
+                onChange: value => update(['workerMaxDepth'], value),
+              }),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'ld_row', style: { marginTop: '10px' } },
+            h(
+              Field,
+              { label: t('plannerFallback') },
+              h(Select, {
+                value: PLANNER_FALLBACK_VALUES.includes(String(config.plannerFallback)) ? config.plannerFallback : 'strong-worker',
+                disabled,
+                options: [
+                  { value: 'strong-worker', label: t('plannerFallbackStrong') },
+                  { value: 'fail', label: t('plannerFallbackFail') },
+                ],
+                onChange: value => update(['plannerFallback'], value),
+              }),
+            ),
+            h(
+              Field,
+              { label: t('lightMinChars'), hint: t('lightMinCharsHint') },
+              h(NumberInput, { value: config.lightMinChars, disabled, min: 1, onChange: value => update(['lightMinChars'], value) }),
+            ),
+            h(
+              Field,
+              { label: t('lightMinFiles'), hint: t('lightMinFilesHint') },
+              h(NumberInput, { value: config.lightMinFiles, disabled, min: 1, onChange: value => update(['lightMinFiles'], value) }),
+            ),
+            h(
+              Field,
+              { label: t('highMinChars'), hint: t('highMinCharsHint') },
+              h(NumberInput, { value: config.highMinChars, disabled, min: 1, onChange: value => update(['highMinChars'], value) }),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'ld_row', style: { marginTop: '10px' } },
+            h(
+              Field,
+              { label: t('plannerDenyExtra'), hint: t('plannerListHint') },
+              h(TextInput, {
+                value: listValue('plannerDenyExtra'),
+                disabled,
+                onChange: value => onListChange('plannerDenyExtra', value),
+              }),
+            ),
+            h(
+              Field,
+              { label: t('plannerAllowExtra'), hint: t('plannerListHint') },
+              h(TextInput, {
+                value: listValue('plannerAllowExtra'),
+                disabled,
+                onChange: value => onListChange('plannerAllowExtra', value),
+              }),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'ld_actions', style: { marginTop: '10px' } },
+            h(Checkbox, {
+              checked: config.plannerAllowRead !== false,
+              disabled,
+              label: t('plannerAllowRead'),
+              onChange: value => update(['plannerAllowRead'], value),
+            }),
+            h(Checkbox, {
+              checked: config.applyToLiveAgents === true,
+              disabled,
+              label: t('applyToLiveAgents'),
+              onChange: value => update(['applyToLiveAgents'], value),
+            }),
+          ),
+          h('div', { className: 'ld_small' }, t('plannerAllowReadHint')),
+          h('div', { className: 'ld_small' }, t('applyToLiveAgentsHint')),
+        ),
+      )
+    }
+
+    /* ── 0.4.0: SlaveAgentTeams node pool ────────────────────────────────── */
+
+    function SlaveTeamsCard({
+      t,
+      current,
+      disabled,
+      update,
+      piReady,
+      providers,
+      routeRegistered,
+      endpointModel,
+      onSetNode,
+      onAddNode,
+      onRemoveNode,
+      onFillLocalNode,
+    }) {
+      const config = current || {}
+      const enabled = config.slaveTeamsEnabled === true
+      const nodes = nodesOf(config)
+      const catalog = Array.isArray(providers) ? providers : []
+      const providerIds = catalog.map(entry => entry.id)
+      const providerSet = new Set(providerIds)
+      const nodeNames = nodes.map(node => String(node.name || '').trim()).filter(Boolean)
+      const defaultNode = String(config.slaveTeamDefaultNode || '')
+      const hasLocalNode = nodes.some(node => String((node && node.provider) || '').trim() === ROUTE_PROVIDER)
+      const localRouteMissing = !routeRegistered && (hasLocalNode || (enabled && nodes.length === 0))
+      const unregistered = piReady
+        ? nodes.filter(node => {
+            const provider = String((node && node.provider) || '').trim()
+            return provider && provider !== ROUTE_PROVIDER && !providerSet.has(provider)
+          })
+        : []
+      const implicitNode = ROUTE_PROVIDER + '/' + (endpointModel || '(model unset)')
+      const defaultNodeOptions = [{ value: '', label: t('slaveRoundRobin') }].concat(
+        nodeNames.map(name => ({ value: name, label: name })),
+      )
+      if (defaultNode && !nodeNames.includes(defaultNode)) defaultNodeOptions.push({ value: defaultNode, label: defaultNode + ' (!)' })
+      const nodeRows = nodes.map((node, index) => {
+        const provider = String(node.provider || '').trim()
+        const entry = catalog.find(candidate => candidate.id === provider)
+        const modelOptions = entry && Array.isArray(entry.models) ? entry.models : []
+        return h(
+          'div',
+          { className: 'ld_node', key: 'slave-node-' + index },
+          h(
+            'div',
+            { className: 'ld_node_head' },
+            h('span', { className: 'ld_chip' }, (node.kind === 'cloud' ? t('slaveNodeCloud') : t('slaveNodeLocal')) + ' #' + String(index + 1)),
+            h('span', { className: 'ld_small' }, (provider || '(provider unset)') + ' / ' + (String(node.model || '').trim() || '(default model)')),
+            h(
+              'button',
+              { type: 'button', className: 'ld_btn danger', disabled, onClick: () => onRemoveNode(index) },
+              t('slaveRemoveNode'),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'ld_row' },
+            h(
+              Field,
+              { label: t('slaveNodeName'), hint: t('slaveNodeNameHint') },
+              h(TextInput, {
+                value: node.name,
+                disabled,
+                placeholder: 'local',
+                onChange: value => onSetNode(index, 'name', value),
+              }),
+            ),
+            h(
+              Field,
+              { label: t('slaveNodeKind') },
+              h(Select, {
+                value: SLAVE_KINDS.includes(String(node.kind)) ? node.kind : 'local',
+                disabled,
+                options: [
+                  { value: 'local', label: t('slaveNodeLocal') },
+                  { value: 'cloud', label: t('slaveNodeCloud') },
+                ],
+                onChange: value => onSetNode(index, 'kind', value),
+              }),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'ld_row' },
+            h(
+              Field,
+              { label: t('slaveNodeProvider'), hint: t('slaveNodeProviderHint') },
+              h(TextInput, {
+                value: node.provider,
+                disabled,
+                list: 'ld-slave-providers',
+                placeholder: ROUTE_PROVIDER,
+                onChange: value => onSetNode(index, 'provider', value),
+              }),
+            ),
+            h(
+              Field,
+              { label: t('slaveNodeModel'), hint: t('slaveNodeModelHint') },
+              h(TextInput, {
+                value: node.model,
+                disabled,
+                list: 'ld-slave-models-' + index,
+                placeholder: endpointModel || 'gemma4:e2b',
+                onChange: value => onSetNode(index, 'model', value),
+              }),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'ld_row' },
+            h(
+              Field,
+              { label: t('slaveNodeNote'), hint: t('slaveNodeNoteHint') },
+              h(TextInput, { value: node.note, disabled, onChange: value => onSetNode(index, 'note', value) }),
+            ),
+          ),
+          h(
+            'datalist',
+            { id: 'ld-slave-models-' + index },
+            modelOptions.map(modelId => h('option', { key: modelId, value: modelId })),
+          ),
+        )
+      })
+      return h(
+        'section',
+        { className: 'ld_card' },
+        h('h3', null, t('slaveTeams')),
+        h('div', { className: 'ld_small' }, t('slaveTeamsHint')),
+        h(
+          'div',
+          { className: 'ld_actions' },
+          h(Checkbox, {
+            checked: enabled,
+            disabled,
+            label: t('slaveTeamsEnable'),
+            onChange: value => update(['slaveTeamsEnabled'], value),
+          }),
+        ),
+        h('div', { className: 'ld_small' }, t('slaveTeamsEnableHint')),
+        !enabled ? h('div', { className: 'ld_msg' }, t('slaveDisabledHint')) : null,
+        localRouteMissing ? h('div', { className: 'ld_msg warn' }, t('slaveRouteMissing')) : null,
+        unregistered.length > 0
+          ? unregistered.map((node, index) =>
+              h(
+                'div',
+                { className: 'ld_msg warn', key: 'slave-unregistered-' + index },
+                format(t('slaveProviderUnregistered'), { name: String(node.name || '?'), provider: String(node.provider || '') }),
+              ),
+            )
+          : null,
+        enabled && nodes.length === 0 ? h('div', { className: 'ld_msg warn' }, format(t('slaveImplicitNode'), { node: implicitNode })) : null,
+        h(
+          'div',
+          { className: 'ld_kv' },
+          h('span', null, h('strong', null, t('slaveNodes')), ' · ' + String(nodes.length)),
+        ),
+        h('div', { className: 'ld_small' }, t('slaveNodesHint')),
+        h(
+          'div',
+          { className: 'ld_nodes' },
+          nodeRows,
+          h(
+            'div',
+            { className: 'ld_actions' },
+            h('button', { type: 'button', className: 'ld_btn', disabled, onClick: () => void onAddNode() }, t('slaveAddNode')),
+            h('button', { type: 'button', className: 'ld_btn', disabled, onClick: () => void onFillLocalNode() }, t('slaveFillLocal')),
+            nodes.length > MAX_SLAVE_NODES ? h('span', { className: 'ld_small' }, t('slaveNodeLimit')) : null,
+          ),
+        ),
+        h('datalist', { id: 'ld-slave-providers' }, providerIds.map(id => h('option', { key: id, value: id }))),
+        h(
+          'div',
+          { className: 'ld_row' },
+          h(
+            Field,
+            { label: t('slaveDefaultNode') },
+            h(Select, {
+              value: defaultNode,
+              disabled,
+              options: defaultNodeOptions,
+              onChange: value => update(['slaveTeamDefaultNode'], value),
+            }),
+          ),
+          h(
+            Field,
+            { label: t('slaveMaxSlaves'), hint: t('slaveMaxSlavesHint') },
+            h(NumberInput, {
+              value: config.slaveTeamMaxSlaves,
+              disabled,
+              min: 1,
+              max: MAX_SLAVES,
+              onChange: value => update(['slaveTeamMaxSlaves'], value),
+            }),
+          ),
+          h(
+            Field,
+            { label: t('slavePreset') },
+            h(TextInput, {
+              value: config.slaveTeamPreset,
+              disabled,
+              placeholder: 'standard',
+              onChange: value => update(['slaveTeamPreset'], value),
+            }),
+          ),
+        ),
+        h(
+          'div',
+          { className: 'ld_row' },
+          h(
+            Field,
+            { label: t('slaveFallback') },
+            h(Select, {
+              value: SLAVE_FALLBACK_VALUES.includes(String(config.slaveTeamFallback)) ? config.slaveTeamFallback : 'inherit',
+              disabled,
+              options: [
+                { value: 'inherit', label: t('slaveFallbackInherit') },
+                { value: 'fail', label: t('slaveFallbackFail') },
+              ],
+              onChange: value => update(['slaveTeamFallback'], value),
+            }),
+          ),
+          h(
+            'div',
+            { className: 'ld_field' },
+            h('label', null, t('slavePromptHelp')),
+            h(Checkbox, {
+              checked: config.slaveTeamPromptHelp !== false,
+              disabled,
+              label: t('slavePromptHelp'),
+              onChange: value => update(['slaveTeamPromptHelp'], value),
+            }),
+          ),
+          h(
+            Field,
+            { label: t('slaveProvider'), hint: t('slaveProviderHint') },
+            h(TextInput, {
+              value: config.slaveTeamProvider,
+              disabled,
+              placeholder: 'spawn',
+              onChange: value => update(['slaveTeamProvider'], value),
+            }),
+          ),
+        ),
+        h(
+          'details',
+          { className: 'ld_fold' },
+          h('summary', null, t('slaveAdvanced')),
+          h(
+            'div',
+            { className: 'ld_row', style: { marginTop: '10px' } },
+            h(
+              Field,
+              { label: t('slaveMaxDepth'), hint: t('slaveMaxDepthHint') },
+              h(NumberInput, {
+                value: config.slaveTeamMaxDepth,
+                disabled,
+                min: 1,
+                max: 5,
+                onChange: value => update(['slaveTeamMaxDepth'], value),
+              }),
+            ),
+          ),
+          h('div', { className: 'ld_small', style: { marginTop: '8px' } }, t('slaveNodeLimit')),
+        ),
+        h('div', { className: 'ld_small' }, t('slaveCompatNote')),
+        h('div', { className: 'ld_small' }, t('slaveToolsNote')),
+      )
+    }
+
     function StatsCard({ t, stats, onRefresh }) {
+      const workerCounts = {
+        started: Number(stats && stats.workersStarted) || 0,
+        failed: Number(stats && stats.workersFailed) || 0,
+        slaves: Number(stats && stats.slavesStarted) || 0,
+        settled: Number(stats && stats.slavesSettled) || 0,
+        slaveFailed: Number(stats && stats.slavesFailed) || 0,
+      }
+      const hasWorkerActivity =
+        workerCounts.started + workerCounts.failed + workerCounts.slaves + workerCounts.settled + workerCounts.slaveFailed > 0
+      const hasLocalActivity = Boolean(
+        stats && (Number(stats.calls) || 0) + (Number(stats.failed) || 0) + (Number(stats.chunkCalls) || 0) > 0,
+      )
       return h(
         'section',
         { className: 'ld_card' },
@@ -1159,7 +2309,7 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', className: 'ld_btn', onClick: () => void onRefresh() }, t('refresh')),
         ),
         h('div', { className: 'ld_small' }, t('statsHint')),
-        stats && stats.calls + stats.failed > 0
+        hasLocalActivity || hasWorkerActivity
           ? h(
               'div',
               { className: 'ld_grid' },
@@ -1169,6 +2319,21 @@ window.__ModuleLoader__.load({
               h('div', { className: 'ld_stat' }, h('b', null, fmt(stats.charsIn + stats.charsOut)), h('span', null, t('statsChars'))),
               h('div', { className: 'ld_stat' }, h('b', null, fmt(stats.localPromptTokens + stats.localCompletionTokens)), h('span', null, t('statsLocalTokens'))),
               h('div', { className: 'ld_stat' }, h('b', null, fmt(stats.estimatedSavedTokens)), h('span', null, t('statsSaved'))),
+              workerCounts.started > 0
+                ? h('div', { className: 'ld_stat', key: 'stat-workers' }, h('b', null, fmt(workerCounts.started)), h('span', null, t('statsWorkers')))
+                : null,
+              workerCounts.failed > 0
+                ? h('div', { className: 'ld_stat', key: 'stat-worker-failed' }, h('b', null, fmt(workerCounts.failed)), h('span', null, t('statsWorkersFailed')))
+                : null,
+              workerCounts.slaves > 0
+                ? h('div', { className: 'ld_stat', key: 'stat-slaves' }, h('b', null, fmt(workerCounts.slaves)), h('span', null, t('statsSlaves')))
+                : null,
+              workerCounts.settled > 0
+                ? h('div', { className: 'ld_stat', key: 'stat-slaves-settled' }, h('b', null, fmt(workerCounts.settled)), h('span', null, t('statsSlavesSettled')))
+                : null,
+              workerCounts.slaveFailed > 0
+                ? h('div', { className: 'ld_stat', key: 'stat-slaves-failed' }, h('b', null, fmt(workerCounts.slaveFailed)), h('span', null, t('statsSlavesFailed')))
+                : null,
             )
           : h('div', { className: 'ld_msg' }, t('statsEmpty')),
         stats
@@ -1187,8 +2352,185 @@ window.__ModuleLoader__.load({
                 .sort()
                 .slice(0, 8)
                 .map(task =>
-                  h('span', { key: task }, h('code', null, TASK_LABELS[task] || task) + ' ×' + fmt(stats.byTask[task].calls)),
+                  h('span', { key: task }, h('code', null, TASK_LABELS[task] || task), ' ×' + fmt(stats.byTask[task].calls)),
                 ),
+            )
+          : null,
+        stats && stats.byNode && Object.keys(stats.byNode).length > 0
+          ? h(
+              'div',
+              { className: 'ld_kv' },
+              h('span', null, t('statsByNode') + ':'),
+              Object.keys(stats.byNode)
+                .sort()
+                .slice(0, 8)
+                .map(node => {
+                  const entry = stats.byNode[node]
+                  const count = typeof entry === 'number' ? entry : Number(entry && (entry.started !== undefined ? entry.started : entry.count)) || 0
+                  return h('span', { key: node }, h('code', null, node), ' ×' + fmt(count))
+                }),
+            )
+          : null,
+      )
+    }
+
+    /* ── composer level picker ──────────────────────────────────────────── */
+
+    /**
+     * Compact level switcher rendered in the conversation composer tool row
+     * (`conversation.input.left`), next to the model / reasoning controls.
+     *
+     * The quick edit writes the same profile config the settings page writes:
+     * a workspace override when the current session belongs to a workspace, or
+     * the global default level otherwise. It renders nothing unless the level
+     * policy AND `composerLevelPicker` are enabled.
+     */
+    function ComposerLevelPicker(props) {
+      const t = typeof props.t === 'function' ? props.t : key => key
+      const form = props.form
+      const useWorkspaces = props.useWorkspaces
+      const snap = form ? useSnapshot(form) : null
+      let workspaces = []
+      if (typeof useWorkspaces === 'function') {
+        try {
+          workspaces = useWorkspaces(state => (state && state.items) || []) || []
+        } catch {
+          workspaces = []
+        }
+      }
+      const [open, setOpen] = useState(false)
+      const [anchor, setAnchor] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState('')
+      const rootRef = useRef(null)
+
+      useEffect(() => {
+        if (!open || typeof document === 'undefined') return undefined
+        const onPointerDown = event => {
+          const root = rootRef.current
+          if (root && typeof root.contains === 'function' && root.contains(event.target)) return
+          setOpen(false)
+        }
+        const onKeyDown = event => {
+          if (event.key === 'Escape') setOpen(false)
+        }
+        document.addEventListener('mousedown', onPointerDown, true)
+        document.addEventListener('keydown', onKeyDown, true)
+        return () => {
+          document.removeEventListener('mousedown', onPointerDown, true)
+          document.removeEventListener('keydown', onKeyDown, true)
+        }
+      }, [open])
+
+      useEffect(() => {
+        if (!error) return undefined
+        const timer = setTimeout(() => setError(''), 6000)
+        return () => clearTimeout(timer)
+      }, [error])
+
+      if (!form || !snap || snap.status !== 'ready') return null
+      const config = snap.value || {}
+      const workspace = resolveComposerWorkspace(workspaces, props.sessionId)
+      const model = composerLevelModel(config, workspace, t)
+      if (!model) return null
+      const writable = snap.writable !== false
+      const selectedValue = model.mode === 'workspace' ? model.override || '' : model.defaultLevel
+
+      const toggle = () => {
+        if (!open) {
+          const root = rootRef.current
+          if (root && typeof root.getBoundingClientRect === 'function' && typeof window !== 'undefined') {
+            const rect = root.getBoundingClientRect()
+            setAnchor({
+              left: Math.max(8, rect.left),
+              bottom: Math.max(8, (window.innerHeight || 0) - rect.top + 6),
+            })
+          }
+        }
+        setOpen(value => !value)
+      }
+
+      const choose = async value => {
+        setOpen(false)
+        setError('')
+        const ops =
+          model.mode === 'workspace'
+            ? [{ op: 'set', path: ['workspaceLevels'], value: withWorkspaceLevel(config.workspaceLevels, model.workspacePath, value) }]
+            : [{ op: 'set', path: ['defaultLevel'], value: value || 'default' }]
+        setBusy(true)
+        try {
+          const accepted = await form.mutate(ops, snap.revision)
+          if (!accepted) setError(t('composerLevelConflict'))
+        } catch (failure) {
+          setError(
+            format(t('composerLevelSaveFailed'), {
+              error: String((failure && failure.message) || failure).slice(0, 160),
+            }),
+          )
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const title =
+        model.mode === 'workspace'
+          ? t('composerLevelTitle') + ' · ' + (model.workspaceLabel || model.workspacePath)
+          : t('composerLevelTitle') + ' · ' + t('composerLevelDefaultMode')
+      return h(
+        'div',
+        { className: 'ld_composer', ref: rootRef },
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ld_composer_trigger',
+            disabled: busy || !writable,
+            title,
+            onClick: toggle,
+          },
+          h('span', { className: 'ld_composer_label' }, t('composerLevelShort')),
+          h(
+            'span',
+            { className: 'ld_composer_value' },
+            levelOptionLabel(t, model.value) + (model.mode === 'workspace' && model.override ? ' *' : ''),
+          ),
+          h('span', { className: 'ld_composer_chevron' }, '▾'),
+        ),
+        error ? h('span', { className: 'ld_composer_err', title: error }, '⚠') : null,
+        open
+          ? h(
+              'div',
+              {
+                className: 'ld_composer_menu',
+                style: anchor
+                  ? { left: anchor.left + 'px', bottom: anchor.bottom + 'px' }
+                  : { left: '0px', bottom: '34px' },
+              },
+              h('div', { className: 'ld_composer_head' }, t('composerLevelMenuTitle')),
+              model.mode === 'workspace'
+                ? h(
+                    'div',
+                    { className: 'ld_composer_note' },
+                    t('composerLevelWorkspace') +
+                      ': ' +
+                      (model.workspaceLabel || model.workspacePath) +
+                      (model.override ? '' : ' · ' + t('composerLevelInherit')),
+                  )
+                : h('div', { className: 'ld_composer_note' }, t('composerLevelDefaultMode')),
+              model.options.map(option =>
+                h(
+                  'button',
+                  {
+                    key: 'level-' + (option.value || 'inherit'),
+                    type: 'button',
+                    className: 'ld_composer_item' + (option.value === selectedValue ? ' on' : ''),
+                    onClick: () => void choose(option.value),
+                  },
+                  h('span', { className: 'ld_composer_check' }, option.value === selectedValue ? '✓' : ''),
+                  h('span', null, option.label),
+                ),
+              ),
+              h('div', { className: 'ld_composer_note' }, t('composerLevelNewSession')),
             )
           : null,
       )
@@ -1249,13 +2591,49 @@ window.__ModuleLoader__.load({
           props => h(Page, Object.assign({}, pageProps, { close: props.close })),
         ),
       )
+
+      // Composer quick level picker: a compact control in the composer tool
+      // row, next to the model / reasoning controls. The component itself
+      // renders nothing while `composerLevelPicker` or `levelsEnabled` is off.
+      ctx.slots.inject('conversation.input.left', () =>
+        ctx.slots.register(
+          {
+            name: 'conversation.input.left',
+            id: 'local-delegate-level-picker',
+            order: 30,
+            locale: NS,
+            inject: () => ({ t: tr, form }),
+          },
+          ComposerLevelPicker,
+        ),
+      )
     }
 
     exports.apply = apply
     exports.inject = ['slots', 'locale', 'configForms']
     exports.name = 'local-delegate-settings'
     exports.Page = Page
-    exports.__test = { Page, HealthCard, ProbeResult, SubagentCard, StatsCard, buildOps, buildPiProvider }
+    exports.__test = {
+      Page,
+      HealthCard,
+      ProbeResult,
+      SubagentCard,
+      LevelsCard,
+      SlaveTeamsCard,
+      StatsCard,
+      ComposerLevelPicker,
+      buildOps,
+      buildPiProvider,
+      buildSlaveNode,
+      levelSelectOptions,
+      findWorkspaceLevel,
+      withWorkspaceLevel,
+      resolveComposerWorkspace,
+      composerLevelModel,
+      listToText,
+      textToList,
+      providerCatalog,
+    }
     return module.exports
   },
 })
