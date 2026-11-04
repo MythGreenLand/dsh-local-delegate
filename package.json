@@ -1,9 +1,9 @@
 {
   "name": "dsh-local-delegate",
-  "version": "0.4.1",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
-  "description": "Delegate mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint — Ollama native API or any OpenAI-compatible gateway — so the main model stops spending tokens on low-value text transformations. v0.4 adds per-project-workspace local AI involvement levels (none/light/default/high/max) with a scoped planner policy and local_worker delegation, plus SlaveAgentTeams: an opt-in mode where the master agent runs several local or cloud slave subagents in parallel (spawn/status/wait/send/interrupt) and coexists with native Agent Teams. v0.4.1 adds a composer quick level picker (next to the model / reasoning controls) with a config switch to show or hide it.",
+  "description": "Delegate mechanical text work (translate, summarize, extract, classify, rewrite) to a local cheap model endpoint — Ollama native API or any OpenAI-compatible gateway — so the main model stops spending tokens on low-value text transformations. v0.4 adds per-project-workspace local AI involvement levels (none/light/default/high/max) with a scoped planner policy and local_worker delegation, plus SlaveAgentTeams: an opt-in mode where the master agent runs several local or cloud slave subagents in parallel and coexists with native Agent Teams. v0.5 turns SlaveAgentTeams into a single-switch automatic mode: every mounted LLM route/model is discovered at spawn time, local routes are preferred, a failed node is retried on the next one, and the endpoint chain (primary + fallbacks) is registered as llm-pi-ai routes automatically.",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
@@ -26,7 +26,7 @@
   "scripts": {
     "verify": "node scripts/verify-endpoint.mjs",
     "verify:gui": "node scripts/verify-gui.mjs",
-    "test": "node scripts/test-host.mjs && node scripts/test-client.mjs && node scripts/test-levels.mjs && node scripts/test-policy.mjs && node scripts/test-slaves.mjs"
+    "test": "node scripts/test-host.mjs && node scripts/test-client.mjs && node scripts/test-levels.mjs && node scripts/test-policy.mjs && node scripts/test-slaves.mjs && node scripts/test-regressions.mjs"
   },
   "dsh": {
     "bundle": {

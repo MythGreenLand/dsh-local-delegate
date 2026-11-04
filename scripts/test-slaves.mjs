@@ -10,7 +10,11 @@
 import assert from 'node:assert/strict'
 import {
   SLAVE_TOOL_NAMES,
+  autoNodesFromProviders,
+  candidateSlaveNodes,
   createSlaveTeamsService,
+  discoverLlmRoutes,
+  isLocalSlaveProvider,
   normalizeSlaveNode,
   preflightSlaveRoute,
   resolveSlaveNodes,
@@ -66,6 +70,7 @@ function codedError(code, message) {
 /** Host context mock: services are read through ctx.get(name). */
 function mockHost({ llm, subagents } = {}) {
   const services = new Map()
+  const listeners = new Map()
   if (llm !== undefined) services.set('llm', llm)
   if (subagents !== undefined) services.set('subagents', subagents)
   return {
@@ -74,6 +79,19 @@ function mockHost({ llm, subagents } = {}) {
       return services.get(name)
     },
     services,
+    on(name, handler) {
+      const list = listeners.get(name) || []
+      list.push(handler)
+      listeners.set(name, list)
+      return () => {
+        const current = listeners.get(name) || []
+        const index = current.indexOf(handler)
+        if (index >= 0) current.splice(index, 1)
+      }
+    },
+    emit(name, ...args) {
+      for (const handler of [...(listeners.get(name) || [])]) handler(...args)
+    },
   }
 }
 
@@ -314,6 +332,68 @@ check('selectSlaveNode prefers explicit name, then default, then round-robin', (
   assert.equal(selectSlaveNode(nodes, 'missing', null, 0), null)
   assert.equal(selectSlaveNode(nodes, null, 'gone', 1).name, 'b')
   assert.equal(selectSlaveNode([], 'a', null, 0), null)
+})
+
+check('candidateSlaveNodes orders failover candidates', () => {
+  const nodes = [{ name: 'a' }, { name: 'b' }, { name: 'c' }]
+  assert.deepEqual(candidateSlaveNodes(nodes, 'b', null, 0).map((node) => node.name), ['b'])
+  assert.deepEqual(candidateSlaveNodes(nodes, 'missing', null, 0), [])
+  assert.deepEqual(candidateSlaveNodes(nodes, null, 'c', 1).map((node) => node.name), ['c', 'b', 'a'])
+  assert.deepEqual(candidateSlaveNodes(nodes, null, null, 2).map((node) => node.name), ['c', 'a', 'b'])
+  assert.deepEqual(candidateSlaveNodes([], null, null, 0), [])
+  const mixed = [
+    { name: 'a', kind: 'local' },
+    { name: 'b', kind: 'local' },
+    { name: 'c', kind: 'cloud' },
+  ]
+  assert.deepEqual(
+    candidateSlaveNodes(mixed, null, null, 1, { preferLocal: true }).map((node) => node.name),
+    ['b', 'a', 'c'],
+    'automatic mode rotates over local nodes first and keeps cloud nodes as failover',
+  )
+  assert.deepEqual(
+    candidateSlaveNodes(mixed, null, null, 2, { preferLocal: true }).map((node) => node.name),
+    ['a', 'b', 'c'],
+  )
+})
+
+check('autoNodesFromProviders classifies, sorts local first, and honours level none', () => {
+  const providers = [
+    { id: 'deepseek-account', name: 'DeepSeek', models: ['deepseek-flash'] },
+    { id: 'intranet-gemma', name: '内网 Gemma', models: ['gemma4:e2b', 'gemma4:e4b'] },
+    { id: 'local-delegate', name: 'local', models: ['gemma4:e2b'] },
+  ]
+  const auto = autoNodesFromProviders(providers, 'default')
+  assert.deepEqual(auto.nodes.map((node) => node.name), [
+    'intranet-gemma/gemma4:e2b',
+    'intranet-gemma/gemma4:e4b',
+    'local-delegate/gemma4:e2b',
+    'deepseek-account/deepseek-flash',
+  ])
+  assert.equal(auto.nodes[0].kind, 'local')
+  assert.equal(auto.nodes[3].kind, 'cloud')
+  assert.ok(isLocalSlaveProvider('intranet-gemma', ''))
+  assert.ok(!isLocalSlaveProvider('deepseek-account', 'DeepSeek'))
+  const none = autoNodesFromProviders(providers, 'none')
+  assert.deepEqual(none.nodes.map((node) => node.name), ['deepseek-account/deepseek-flash'])
+  assert.equal(none.dropped.length, 3)
+})
+
+check('discoverLlmRoutes enumerates providers/models and tolerates failures', async () => {
+  const llm = {
+    listProviders: () => [{ id: 'intranet-gemma', name: 'Intranet' }, { id: 'broken', name: 'Broken' }],
+    async listModels(provider) {
+      if (provider === 'broken') throw new Error('missing credential')
+      return [{ id: 'gemma4:e2b' }]
+    },
+  }
+  const discovered = await discoverLlmRoutes(mockHost({ llm }))
+  assert.deepEqual(discovered.providers, [{ id: 'intranet-gemma', name: 'Intranet', models: ['gemma4:e2b'] }])
+  assert.match(discovered.issues.join(' '), /broken/)
+
+  const unavailable = await discoverLlmRoutes(mockHost({}))
+  assert.deepEqual(unavailable.providers, [])
+  assert.match(unavailable.issues.join(' '), /llm service is unavailable/)
 })
 
 // ---------------------------------------------------------------------------
@@ -666,6 +746,110 @@ function setupServiceOnly(config) {
 // slave_team_spawn
 // ---------------------------------------------------------------------------
 
+check('installFor installs from the switch alone in auto mode (no synchronous pool)', async () => {
+  const config = baseConfig({ endpoint: { model: '' }, slaveNodes: [], workerRouteModel: '' })
+  assert.deepEqual(resolveSlaveNodes(config, 'default').nodes, [], 'sync implicit pool must be empty for this case')
+  const llm = {
+    listProviders: () => [{ id: 'intranet-gemma', name: '内网 Gemma' }],
+    async listModels() {
+      return [{ id: 'gemma4:e2b' }]
+    },
+  }
+  const setup = setupSlaveAgent({ config, llm })
+  assert.deepEqual(setup.registered.map((definition) => definition.name).sort(), [...SLAVE_TOOL_NAMES].sort())
+  const section = setup.sections[0]
+  assert.match(section.text, /automatic mode/i)
+  assert.match(section.text, /detected when spawning/i)
+  const discovered = await setup.service.discover()
+  assert.equal(discovered.mode, 'auto')
+  assert.deepEqual(discovered.nodes.map((node) => node.name), ['intranet-gemma/gemma4:e2b'])
+  assert.equal(discovered.nodes[0].kind, 'local')
+})
+
+check('installFor does not install dead slave tools at level none in automatic mode', () => {
+  const automatic = setupServiceOnly(baseConfig({ slaveNodes: [] }))
+  assert.equal(automatic.service.installFor(automatic.mocked.agent, 'none'), null)
+  assert.equal(automatic.mocked.registered.length, 0)
+  assert.equal(automatic.mocked.contexts.length, 0)
+
+  // Explicit cloud nodes remain usable at L0; only the local filter applies.
+  const explicitCloud = baseConfig({
+    slaveNodes: [{ name: 'cloud', kind: 'cloud', provider: 'deepseek-account', model: 'deepseek-flash' }],
+  })
+  const cloud = setupServiceOnly(explicitCloud)
+  assert.equal(typeof cloud.service.installFor(cloud.mocked.agent, 'none'), 'function')
+  assert.equal(cloud.mocked.registered.length, 5)
+})
+
+check('discover exposes all mounted routes even with explicit slaveNodes', async () => {
+  const llm = {
+    listProviders: () => [{ id: 'local-delegate', name: 'Local delegate' }],
+    async listModels() {
+      return [{ id: 'gemma4:e4b' }, { id: 'gemma4:e2b' }]
+    },
+  }
+  const setup = setupSlaveAgent({
+    config: baseConfig({
+      slaveNodes: [{ name: 'chosen', kind: 'local', provider: 'local-delegate', model: 'gemma4:e4b' }],
+    }),
+    llm,
+  })
+  const discovered = await setup.service.discover()
+  assert.deepEqual(discovered.nodes.map((node) => node.name), ['chosen'])
+  assert.deepEqual(discovered.detected.map((node) => node.model).sort(), ['gemma4:e2b', 'gemma4:e4b'])
+  assert.deepEqual(discovered.providers[0].models.sort(), ['gemma4:e2b', 'gemma4:e4b'])
+})
+
+check('discover respects slaveTeamAutoDiscover=false and reports implicit mode', async () => {
+  const llm = {
+    listProviders: () => [{ id: 'intranet-gemma', name: 'Intranet' }],
+    async listModels() {
+      return [{ id: 'gemma4:e2b' }]
+    },
+  }
+  const setup = setupSlaveAgent({
+    config: baseConfig({ slaveNodes: [], slaveTeamAutoDiscover: false, endpoint: { model: 'gemma4:e4b' } }),
+    llm,
+  })
+  const discovered = await setup.service.discover()
+  assert.equal(discovered.mode, 'implicit')
+  assert.equal(discovered.autoDiscover, false)
+  assert.deepEqual(discovered.nodes.map((node) => node.name), ['local'])
+  assert.equal(discovered.nodes[0].model, 'gemma4:e4b')
+  // The GUI catalog still lists every mountable route for the manual picker.
+  assert.deepEqual(discovered.detected.map((node) => node.name), ['intranet-gemma/gemma4:e2b'])
+})
+
+check('slave_team_spawn uses the auto-detected pool when no nodes are configured', async () => {
+  const llm = {
+    listProviders: () => [
+      { id: 'deepseek-account', name: 'DeepSeek' },
+      { id: 'intranet-gemma', name: 'Intranet' },
+    ],
+    async listModels(provider) {
+      return provider === 'deepseek-account' ? [{ id: 'deepseek-flash' }] : [{ id: 'gemma4:e2b' }]
+    },
+    async resolveCallConfig() {},
+  }
+  const setup = setupSlaveAgent({
+    config: baseConfig({ endpoint: { model: '' }, slaveNodes: [], workerRouteModel: '' }),
+    llm,
+  })
+  const before = await setup.status.execute({}, setup.exec())
+  assert.equal(before.mode, 'auto')
+  assert.match(setup.status.output.render(null, before)[0].text, /Detected node pool \(2\)/)
+  const result = await setup.spawn.execute({ tasks: [{ task: 'do it' }] }, setup.exec())
+  assert.equal(result.mode, 'auto')
+  assert.equal(result.started.length, 1)
+  assert.equal(result.started[0].node, 'intranet-gemma/gemma4:e2b', 'local routes sort first')
+  assert.deepEqual(result.nodes, ['intranet-gemma/gemma4:e2b', 'deepseek-account/deepseek-flash'])
+  assert.equal(setup.subagents.calls.start.length, 1)
+  assert.deepEqual(setup.subagents.calls.start[0].request.agentOptions, {
+    provider: 'intranet-gemma',
+    model: 'gemma4:e2b',
+  })
+})
+
 check('slave_team_spawn validates task count and default node', async () => {
   const setup = setupSlaveAgent({ config: baseConfig({
     slaveNodes: [
@@ -751,6 +935,35 @@ check('slave_team_spawn captures per-task failures and keeps starting the rest',
   assert.equal(setup.subagents.calls.start.length, 1, 'only the good task reaches startActivation')
   assert.equal(setup.stats.slavesStarted, 1)
   assert.equal(setup.stats.slavesFailed, 3)
+})
+
+check('slave_team_spawn retries a failed node on the next candidate, but an explicit node is used alone', async () => {
+  const setup = setupSlaveAgent({
+    config: baseConfig({
+      slaveNodes: [
+        { name: 'bad', kind: 'cloud', provider: 'bad-provider', model: 'x' },
+        { name: 'local', kind: 'local', provider: 'local-delegate', model: 'gemma4:e2b' },
+      ],
+    }),
+    llm: mockLlm({ rejectProvider: 'bad-provider' }),
+  })
+  const result = await setup.spawn.execute({ tasks: [{ name: 'job', task: 'do it' }] }, setup.exec())
+  assert.equal(result.failed.length, 0)
+  assert.equal(result.started.length, 1)
+  assert.equal(result.started[0].node, 'local', 'the failed node falls through to the next candidate')
+  assert.equal(result.started[0].attempts, 2)
+  assert.equal(result.started[0].tried[0].node, 'bad')
+  assert.equal(setup.subagents.calls.start.length, 1, 'only the successful route starts an activation')
+
+  const explicit = await setup.spawn.execute(
+    { tasks: [{ name: 'pinned', task: 'do it', node: 'bad' }] },
+    setup.exec(),
+  )
+  assert.equal(explicit.started.length, 0)
+  assert.equal(explicit.failed.length, 1)
+  assert.match(explicit.failed[0].error, /SLAVE_ROUTE_UNAVAILABLE/)
+  assert.equal(explicit.failed[0].tried.length, 1, 'an explicit node does not silently fail over')
+  assert.equal(setup.subagents.calls.start.length, 1)
 })
 
 check('slave_team_spawn uniquifies duplicate task names and honours maxSlaves', async () => {
@@ -920,7 +1133,11 @@ check('slave_team_send forwards to subagents.sendMessage', async () => {
   await setup.spawn.execute({ tasks: [{ name: 'one', task: 'a' }] }, setup.exec())
   const controller = new AbortController()
   const result = await setup.send.execute({ name: 'one', message: 'please hurry' }, setup.exec(controller.signal))
-  assert.deepEqual(result, { sent: true, name: 'one', message_id: 'msg-1' })
+  assert.equal(result.sent, true)
+  assert.equal(result.name, 'one')
+  assert.equal(result.message_id, 'msg-1')
+  assert.equal(result.follow_up_pending, true)
+  assert.match(result.note, /new turn/)
   assert.equal(setup.subagents.calls.send.length, 1)
   const call = setup.subagents.calls.send[0]
   assert.equal(call.sender, setup.agent)
@@ -928,6 +1145,47 @@ check('slave_team_send forwards to subagents.sendMessage', async () => {
   assert.deepEqual(call.content, [{ type: 'text', text: 'please hurry' }])
   assert.equal(call.options.signal, controller.signal)
   await assert.rejects(setup.send.execute({ name: 'nope', message: 'x' }, setup.exec()), /SLAVE_UNKNOWN_NAME/)
+})
+
+check('slave_team_send tracks the follow-up turn and wait observes it', async () => {
+  const setup = setupSlaveAgent({ config: baseConfig({
+    slaveNodes: [{ name: 'local', kind: 'local', provider: 'local-delegate', model: 'gemma4:e2b' }],
+  }) })
+  await setup.spawn.execute({ tasks: [{ name: 'one', task: 'a' }] }, setup.exec())
+  setup.subagents.pending[0].resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'first' }] })
+  await tick()
+  assert.equal(setup.service.statusFor(setup.agent).settled, 1)
+
+  await setup.send.execute({ name: 'one', message: 'again' }, setup.exec())
+  const during = setup.service.statusFor(setup.agent)
+  assert.equal(during.running, 1, 'a follow-up turn counts as running')
+  assert.equal(during.settled, 0)
+  assert.equal(during.runs[0].follow_up_pending, true)
+
+  let settled = null
+  const waiting = setup.wait.execute({ names: ['one'], timeout_ms: 1000 }, setup.exec()).then((value) => {
+    settled = value
+    return value
+  })
+  await tick()
+  assert.equal(settled, null, 'wait must not return the stale settled snapshot')
+
+  setup.host.emit('subagent/end', {
+    id: 'child-1',
+    provider: 'spawn',
+    runId: 'run-1',
+    stopReason: 'completed',
+    lastAssistantMessage: [{ type: 'text', text: 'DONE' }],
+  })
+  const result = await waiting
+  assert.equal(result.pending.length, 0)
+  assert.equal(result.settled.length, 1)
+  assert.equal(result.settled[0].stop_reason, 'completed')
+  assert.match(result.settled[0].output_preview, /DONE/)
+  const after = setup.service.statusFor(setup.agent)
+  assert.equal(after.running, 0)
+  assert.equal(after.settled, 1)
+  assert.equal(after.runs[0].follow_up_pending, undefined)
 })
 
 check('slave_team_interrupt forwards to subagents.interrupt with ancestor authority', async () => {

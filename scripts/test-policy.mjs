@@ -643,6 +643,35 @@ check('SlaveAgentTeams installFor only runs for root planners when enabled', asy
   policy.dispose()
 })
 
+check('level context reports slave tools only when installFor really installed them', async () => {
+  const missing = createScopedMock()
+  const missingAgent = makeAgent({ id: 'root-missing', scoped: missing.scoped })
+  const missingHost = createHost({
+    config: configFor({ defaultLevel: 'none', slaveTeamsEnabled: true }),
+    agents: [missingAgent],
+  })
+  const missingPolicy = buildPolicy(missingHost, {
+    getSlaveTeams: () => ({ installFor: () => null, disposeFor() {}, summarize: () => ({ nodes: 0 }) }),
+  })
+  await missingPolicy.start()
+  assert.match(missing.state.contexts[0].text({}), /tools are not installed/)
+  assert.doesNotMatch(missing.state.contexts[0].text({}), /tools are installed\./)
+  missingPolicy.dispose()
+
+  const installed = createScopedMock()
+  const installedAgent = makeAgent({ id: 'root-installed', scoped: installed.scoped })
+  const installedHost = createHost({
+    config: configFor({ defaultLevel: 'high', slaveTeamsEnabled: true }),
+    agents: [installedAgent],
+  })
+  const installedPolicy = buildPolicy(installedHost, {
+    getSlaveTeams: () => ({ installFor: () => () => {}, disposeFor() {}, summarize: () => ({ nodes: 1 }) }),
+  })
+  await installedPolicy.start()
+  assert.match(installed.state.contexts[0].text({}), /SlaveAgentTeams tools are installed\./)
+  installedPolicy.dispose()
+})
+
 check('SlaveAgentTeams is skipped when disabled', async () => {
   const calls = { installs: 0 }
   const service = { installFor() { calls.installs += 1; return null }, disposeFor() {}, summarize: () => ({ nodes: 0 }) }

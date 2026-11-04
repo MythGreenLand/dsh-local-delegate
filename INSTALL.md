@@ -37,7 +37,7 @@ node "<插件目录>\scripts\verify-endpoint.mjs" --kind openai-compatible --bas
 # Windows（PowerShell 7）：下载最新 Release
 pwsh -NoProfile -File scripts\install-from-github.ps1 -Version latest
 # 指定版本 / 自定义目录 / 覆盖同版本目录
-pwsh -NoProfile -File scripts\install-from-github.ps1 -Version v0.4.1 -Force
+pwsh -NoProfile -File scripts\install-from-github.ps1 -Version v0.5.1 -Force
 ```
 
 ```bash
@@ -93,7 +93,7 @@ bash scripts/install-from-github.sh latest
 **推荐用 GUI**：Plugins → dsh-local-delegate → Configure，或 Settings → 本地模型。保存后写入 profile 覆盖行并在数秒内热生效；页面上有「测试连接」「拉取模型」、节省统计、等级卡片与 SlaveAgentTeams 卡片。
 
 - **本地 AI 介入程度**：选默认等级（无/轻度/默认/更高/最高）、给单个工作区设置覆盖（选「跟随默认」可删除覆盖）、在「等级高级设置」里调 worker 路由/阈值/planner 选项。选「更高/最高」但还没注册 `local-delegate` 路由时，卡片会给出警告。
-- **SlaveAgentTeams**：打开开关 →「添加节点」或「用本地端点填充一个本地节点」→ 填名称（唯一）、类型（本地/云端）、provider/model（输入框带 datalist 候选）→ 可选默认节点、单次最大 slave 数（1–8）、preset、失败回退。节点列表为空时会提示将使用隐式本地节点 `local-delegate/<endpoint.model>`。
+- **SlaveAgentTeams（0.5.0 单开关）**：打开开关即可。root/Team Lead 在 spawn 时自动发现所有已挂载的 LLM 路由/模型（本地优先），节点失败自动换下一个；保存配置时还会把 `endpoint` + `fallbackEndpoints` 自动注册成 `llm-pi-ai` 路由。卡片里可「刷新检测」「立即注册端点链路由」，节点列表保留为高级手动覆盖（非空时不再自动发现）。
 - **输入框快捷等级选择器（0.4.1）**：在「本地 AI 介入程度」卡片勾选「在输入框显示等级选择器」（`composerLevelPicker`，默认开启）。刷新 GUI 后，输入框工具栏出现「本地 AI：默认 ▾」；点击即可切换当前工作区等级（会话未归属工作区时改全局默认等级）。关闭勾选会隐藏该控件，设置页配置不受影响。
 
 也可以继续手工编辑 profile 的 `cordis.patch.yml`（按行 id 覆盖，同 id 后写覆盖前写，保存后 1–5 秒生效，无需重启）：
@@ -122,36 +122,37 @@ bash scripts/install-from-github.sh latest
     plannerFallback: strong-worker
     applyToLiveAgents: false
 
-    # 0.4.0：SlaveAgentTeams（默认关闭）
+    # 0.5.0：SlaveAgentTeams（默认关闭；打开即自动模式）
     slaveTeamsEnabled: false
-    slaveNodes: []                   # [{name, kind: local|cloud, provider, model, note}]
+    slaveTeamAutoDiscover: true      # false = 只用下面的手动节点池
+    slaveNodes: []                   # 手动覆盖：[{name, kind: local|cloud, provider, model, note}]
     slaveTeamDefaultNode: ""
     slaveTeamMaxSlaves: 4
     slaveTeamFallback: inherit
 ```
 
-> ⚠️ 该行的 `config` 是**整块替换**：覆盖时要把想保留的字段都写出来（其余回到默认值）。GUI 首次保存也会生成完整覆盖行。
+> ⚠️ 该行的 `config` 是**整块替换**：手工覆盖时要把想保留的字段都写出来（其余回到默认值）。GUI 保存只写入发生变化的字段，未改动字段继续继承默认值。
 
-## 4. 升级到 0.4.1（免重启流程）
+## 4. 升级到 0.5.1（免重启流程）
 
-0.4.1 只新增输入框快捷等级选择器（`composerLevelPicker` 默认 `true`，仅影响 Client 半显示，不改变任何 Host 行为/提示词/工具）；若从 0.3.0 直接升级，0.4 的默认配置（`levelsEnabled: true` + `defaultLevel: default` + `slaveTeamsEnabled: false`）同样**不安装任何 scoped 层、不注册新工具、提示词不变**。
+0.5.1 修复了等级 none 的 slave 工具误报、端点数值 0 校验、Remove route 遗留 fb 路由、自动注册覆盖用户 provider 定制、send 后续回合状态、`slaveTeamAutoDiscover:false` 的 /slaves 模式以及重复标签；安装流程与 0.5.0 相同。`n`n0.5.0 把 SlaveAgentTeams 改成单开关自动模式：默认 `slaveTeamAutoDiscover: true`，`slaveTeamsEnabled` 打开后在 spawn 时自动发现所有已挂载 LLM 路由/模型（本地优先），节点失败自动换下一个；保存配置时把 `endpoint` + `fallbackEndpoints` 自动注册为 `llm-pi-ai` 路由。显式 `slaveNodes` 仍可手动覆盖。默认关闭时行为与 0.4.1 完全一致。
 
 1. **备份**（可回滚）：
    - 复制 profile 的 `cordis.patch.yml`（桌面端默认在 `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`）；
-   - 保留旧版本目录（如 `dsh-local-delegate-0.3.0` / `0.4.0`），不要删。
-2. 修改/同步源码到 **0.4.1 新版本目录**（脚本自动读取 `package.json` 版本号）：
+   - 保留旧版本目录（如 `dsh-local-delegate-0.4.1`），不要删。
+2. 修改/同步源码到 **0.5.1 新版本目录**（脚本自动读取 `package.json` 版本号）：
    ```powershell
    pwsh -NoProfile -File "<源码目录>\scripts\sync-install.ps1"
    ```
-   它会做：语法检查 → 同步到 `%USERPROFILE%\.dsh\local-plugins\dsh-local-delegate-0.4.1` → 打印下一步。
+   它会做：语法检查 → 同步到 `%USERPROFILE%\.dsh\local-plugins\dsh-local-delegate-0.5.1` → 打印下一步。
 3. 让 Agent 先卸载旧包、再装新目录：
    ```
    plugin_manager action=remove_bundle target=dsh-local-delegate
-   plugin_manager action=install_bundle target=C:\Users\<你>\.dsh\local-plugins\dsh-local-delegate-0.4.1
+   plugin_manager action=install_bundle target=C:\Users\<你>\.dsh\local-plugins\dsh-local-delegate-0.5.1
    ```
-4. **刷新 Web GUI**（F5）：Settings → 本地模型 应出现「本地 AI 介入程度」和「SlaveAgentTeams（多从节点并行）」两张卡片；打开任一会话，输入框工具栏应出现「本地 AI：<当前等级> ▾」。若入口/控件没出现，**重启一次 DSH 桌面端**（Client 半模块缓存兜底）。
-5. 验证：`local_health` 状态行显示 `v0.4.1`；`/localpolicy` 可用；保持默认等级/开关关闭时行为与 0.3.0 一致（旧测试与手工流程全过）。
-6. 再按需在 GUI 里设置工作区等级、打开 SlaveAgentTeams，或用「在输入框显示等级选择器」开关控制输入框控件（新会话生效；需要立即作用于运行中会话时打开 `applyToLiveAgents`）。
+4. **刷新 Web GUI**（F5）：SlaveAgentTeams 卡片应出现「自动检测并启用…」开关、自动模式面板与「刷新检测 / 立即注册端点链路由」按钮。若入口/控件没出现，**重启一次 DSH 桌面端**（Client 半模块缓存兜底）。
+5. 验证：`local_health` 状态行显示 `v0.5.1`；`/localpolicy` 显示 `slave teams: enabled=..., mode=auto`；打开开关后新会话里 `slave_team_status` 返回自动检测到的节点。
+6. 保持默认等级/开关关闭时行为与 0.4.1 一致（旧测试与手工流程全过）。
 
 同一版本重复安装不会重新加载代码；这也是脚本按版本分目录的原因。
 

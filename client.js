@@ -84,6 +84,7 @@ window.__ModuleLoader__.load({
       ['slaveTeamMaxDepth', false],
       ['slaveTeamFallback', false],
       ['slaveTeamPromptHelp', false],
+      ['slaveTeamAutoDiscover', false],
     ]
 
     const TASK_LABELS = {
@@ -137,6 +138,7 @@ window.__ModuleLoader__.load({
       apiKeyEnvHint: 'Optional alternative to the key field: the name of an environment variable or DSH credential reference.',
       headers: 'Extra headers (JSON)',
       headersHint: 'Optional JSON object; do not put secrets here — use the key fields instead.',
+      endpointNumberInvalid: '{field} must be a number between {min} and {max}.',
       think: 'Thinking',
       thinkHint: 'Ollama native only. Leave off for thinking models so the output budget is not spent on reasoning.',
       reasoningEffort: 'Reasoning effort',
@@ -152,7 +154,7 @@ window.__ModuleLoader__.load({
       fallbackHint: 'Tried in order when the primary endpoint is unreachable or returns a retryable error.',
       addFallback: 'Add fallback',
       remove: 'Remove',
-      limits: 'Delegation limits',
+      limits: 'Advanced limits (usually not needed)',
       retries: 'Retries per endpoint',
       chunkChars: 'Chunk size (chars)',
       maxConcurrency: 'Chunk concurrency',
@@ -175,6 +177,12 @@ window.__ModuleLoader__.load({
       healthUnknown: 'not probed yet',
       healthChecked: 'last probe',
       healthPrimary: 'primary',
+      healthFallback: 'fallback',
+      healthOnline: 'online',
+      healthOffline: 'offline',
+      healthModelMissing: 'reachable, model missing',
+      healthEndpoints: 'Endpoint chain',
+      healthNoFallbacks: 'No fallback endpoint configured.',
       healthEffective: 'effective',
       healthLatency: 'latency',
       statusFailed: 'Status request failed: {error}',
@@ -201,7 +209,7 @@ window.__ModuleLoader__.load({
       statsByNode: 'slave starts by node',
       subagent: 'Use as a Subagent / model-picker route',
       subagentHint:
-        'Registers this endpoint in the DSH model catalog as provider “local-delegate” (via llm-pi-ai) and allows that route for Subagent model selection. The Subagent policy is sampled when a new session is composed, so open a new session to use it.',
+        'This is an action button, not a live toggle: clicking it registers this endpoint in the DSH model catalog as provider “local-delegate” (via llm-pi-ai) and allows that route for Subagent model selection. The Subagent policy is sampled when a new session is composed, so open a new session to use it. The result appears directly below the button.',
       subagentEnable: 'Enable for Subagent',
       subagentDisable: 'Remove route',
       subagentEnabled: 'Registered as provider “local-delegate” and allowed for Subagent.',
@@ -279,11 +287,39 @@ window.__ModuleLoader__.load({
       slaveTeams: 'SlaveAgentTeams (multi-node parallel)',
       slaveTeamsHint:
         'Enable a node pool and five slave_team_* tools for root/Team-Lead agents: spawn several slave child agents in parallel, each on a local cheap model or a cloud route, then wait for and collect the results. Compatible with native Agent Teams: teammates stay on the strong model and slaves never appear in the team roster.',
+      slaveTeamsShortHint: 'Run independent tasks on cheap local or cloud slave subagents. Slaves are children, not Team teammates.',
       slaveTeamsEnable: 'Enable SlaveAgentTeams tools',
       slaveTeamsEnableHint: 'Only root agents (and Team Leads) receive the slave_team_* tools; child agents and teammates never do.',
+      slaveAutoDiscover: 'Auto-detect all available endpoints and fallback endpoints (recommended)',
+      slaveAutoDiscoverHint:
+        'One switch: the root agent discovers every mounted LLM route/model when spawning, prefers local routes, and retries a failed node on the next one. Cloud routes stay available as failover unless named explicitly. The endpoint chain (primary + fallbacks) is registered as llm-pi-ai routes automatically on save.',
+      slaveAutoMode: 'Automatic mode',
+      slaveAutoNodes: 'Detected nodes',
+      slaveAutoEmpty: 'No LLM route detected yet. Save once so the endpoint chain is registered as routes, then refresh detection.',
+      slaveAutoRefresh: 'Refresh detection',
+      slaveAutoDetected: 'Detected {count} route(s), {nodes} node(s) in the spawn pool.',
+      slaveAutoIssues: 'Discovery notes: {issues}',
+      slaveAutoRoutesSync: 'Registered {count} endpoint-chain route(s) in llm-pi-ai.',
+      slaveAutoRoutesFailed: 'Endpoint-chain routes could not be registered automatically: {error}',
+      slaveAutoSyncNow: 'Register endpoint-chain routes now',
+      slaveAutoOffHint: 'Automatic discovery is off; the node pool below is used as configured.',
+      slaveAvailable: 'Available nodes',
+      slaveAvailableHint:
+        'Tick the nodes to include in SlaveAgentTeams. It shows the endpoint-chain routes by default; other mounted routes are summarized below. If nothing is ticked, automatic mode uses every detected node. At workspace level "none", local nodes are not used.',
+      slaveAvailableSelected: '{selected}/{total} selected',
+      slaveAvailableRouteHint:
+        'The list counts LLM route/model pairs, not endpoints: one endpoint can expose several models, and the same model can appear again under a different provider.',
+      slaveOtherRoutesHint:
+        '{count} other mounted route(s) are not part of the endpoint chain and are hidden here ({providers}); add them with the advanced node editor only when needed.',
+      slaveCleanNodes: 'Clean invalid/duplicate nodes',
+      slaveAvailableEmpty: 'No available nodes detected yet. Save the endpoint chain, register the routes, then refresh detection.',
+      slaveSelectAll: 'Select all available',
+      slaveManualSelection: 'A manual node selection is active. Use "Select all available" to include newly detected nodes again.',
+      slaveModelUnregistered: 'Node "{name}" uses {provider}/{model}, but that model is not advertised by the route; it will fail at spawn.',
       slaveDisabledHint: 'Slave tools are off. The node pool below is saved but unused until enabled.',
       slaveNodes: 'Slave nodes',
-      slaveNodesHint: 'Each node is an LLM route (provider/model) a slave can run on. Order is preserved; the default node overrides round-robin.',
+      slaveNodesOptional: 'optional manual override',
+      slaveNodesHint: 'Optional manual override. Each node is an LLM route (provider/model); order is preserved and the default node overrides round-robin. Leave the list empty to use automatic discovery.',
       slaveNodeName: 'Name',
       slaveNodeNameHint: 'Unique name the agent uses to pick this node.',
       slaveNodeKind: 'Kind',
@@ -368,6 +404,7 @@ window.__ModuleLoader__.load({
       apiKeyEnvHint: '可选：填写环境变量名或 DSH 凭据引用名，代替上面的密钥字段。',
       headers: '额外请求头（JSON）',
       headersHint: '可选 JSON 对象；不要把密钥写在这里，改用上面的字段。',
+      endpointNumberInvalid: '{field} 必须是 {min} 到 {max} 之间的数字。',
       think: '思考',
       thinkHint: '仅 Ollama 原生。思考模型请关闭，否则输出预算会被推理占光。',
       reasoningEffort: '推理档位',
@@ -383,7 +420,7 @@ window.__ModuleLoader__.load({
       fallbackHint: '主端点不可达或返回可重试错误时按顺序尝试。',
       addFallback: '添加备用端点',
       remove: '删除',
-      limits: '委派限制',
+      limits: '高级限制（一般不用改）',
       retries: '每个端点的重试次数',
       chunkChars: '分块大小（字符）',
       maxConcurrency: '分块并发',
@@ -406,6 +443,12 @@ window.__ModuleLoader__.load({
       healthUnknown: '尚未探测',
       healthChecked: '最近探测',
       healthPrimary: '主端点',
+      healthFallback: '备用端点',
+      healthOnline: '在线',
+      healthOffline: '离线',
+      healthModelMissing: '可达但模型缺失',
+      healthEndpoints: '端点链状态',
+      healthNoFallbacks: '未配置备用端点。',
       healthEffective: '生效端点',
       healthLatency: '延迟',
       statusFailed: '状态请求失败：{error}',
@@ -432,7 +475,7 @@ window.__ModuleLoader__.load({
       statsByNode: '按节点统计的 slave 启动数',
       subagent: '作为 Subagent / 模型选择器路由',
       subagentHint:
-        '把当前端点注册进 DSH 模型目录（通过 llm-pi-ai，provider 名为 local-delegate），并加入 Subagent 的可选模型。Subagent 策略在新建会话时采样，启用后请新开会话使用。',
+        '这是一个操作按钮，不是即时开关：点击后会把当前端点注册进 DSH 模型目录（通过 llm-pi-ai，provider 名为 local-delegate），并加入 Subagent 的可选模型。Subagent 策略在新建会话时采样，启用后请新开会话使用。操作结果会直接显示在按钮下方。',
       subagentEnable: '启用为 Subagent 模型',
       subagentDisable: '移除路由',
       subagentEnabled: '已注册为 provider “local-delegate”，并已加入 Subagent 可选模型。',
@@ -510,11 +553,39 @@ window.__ModuleLoader__.load({
       slaveTeams: 'SlaveAgentTeams（多从节点并行）',
       slaveTeamsHint:
         '打开后，root/Team Lead agent 会获得节点池与 5 个 slave_team_* 工具：一次并行启动多个 slave 子 agent，每个跑在本地廉价模型或云端路由上，再由 master 等待/汇总结果。与原生 Agent Teams 兼容：teammate 仍用强模型，slave 不会出现在 team 名单里。',
+      slaveTeamsShortHint: '把独立任务交给本地/云端 slave 子 agent 并行执行；slave 是子 agent，不是 Team teammate。',
       slaveTeamsEnable: '启用 SlaveAgentTeams 工具',
       slaveTeamsEnableHint: '只有 root agent（及 Team Lead）会拿到 slave_team_* 工具；child agent 与 teammate 永远不装。',
+      slaveAutoDiscover: '自动检测并启用所有可用端点与备用端点（推荐）',
+      slaveAutoDiscoverHint:
+        '只需这一个开关：root agent 在 spawn 时自动发现所有已挂载的 LLM 路由/模型，轮询优先本地路由；单个节点启动失败自动换下一个。云端路由默认只作为故障转移候选（显式指定节点时才直接使用）。保存时还会把端点链（主端点 + 备用端点）自动注册成 llm-pi-ai 路由。',
+      slaveAutoMode: '自动模式',
+      slaveAutoNodes: '检测到的节点',
+      slaveAutoEmpty: '暂未检测到 LLM 路由。先保存一次，让端点链注册成路由，再刷新检测。',
+      slaveAutoRefresh: '刷新检测',
+      slaveAutoDetected: '检测到 {count} 条路由、{nodes} 个可用节点（spawn 池）。',
+      slaveAutoIssues: '检测说明：{issues}',
+      slaveAutoRoutesSync: '已在 llm-pi-ai 中注册 {count} 条端点链路由。',
+      slaveAutoRoutesFailed: '端点链路由自动注册失败：{error}',
+      slaveAutoSyncNow: '立即注册端点链路由',
+      slaveAutoOffHint: '自动检测已关闭；将按下面配置的节点池使用。',
+      slaveAvailable: '可用节点',
+      slaveAvailableHint:
+        '勾选要加入 SlaveAgentTeams 的节点。默认只显示端点链路由，其他已挂载路由会在下方提示。未勾选任何节点时，自动模式会使用全部检测到的节点。当前工作区等级为 none 时，本地节点不会参与 spawn。',
+      slaveAvailableSelected: '已选 {selected}/{total}',
+      slaveAvailableRouteHint:
+        '列表按 LLM 路由/模型对计数，不是按端点计数：一个端点可以暴露多个模型，同一个模型也可能通过不同 provider 再次出现。',
+      slaveOtherRoutesHint:
+        '另有 {count} 条其他已挂载路由（{providers}）不属于端点链，已从列表中隐藏；需要时请用高级节点编辑器添加。',
+      slaveCleanNodes: '清理无效/重复节点',
+      slaveAvailableEmpty: '暂未检测到可用节点。先保存端点链、注册路由，再刷新检测。',
+      slaveSelectAll: '全选可用节点',
+      slaveManualSelection: '当前是手动选中的节点。点击“全选可用节点”可重新纳入新检测到的节点。',
+      slaveModelUnregistered: '节点“{name}”使用 {provider}/{model}，但该路由未声明这个模型；spawn 时会失败。',
       slaveDisabledHint: 'Slave 工具当前关闭。下面的节点池会保存，但启用前不会生效。',
       slaveNodes: '从节点列表',
-      slaveNodesHint: '每个节点是一条 LLM 路由（provider/model）。顺序即配置顺序；设置了默认节点时优先用默认节点，否则轮询。',
+      slaveNodesOptional: '可选的手动覆盖',
+      slaveNodesHint: '可选的手动覆盖。每个节点是一条 LLM 路由（provider/model），顺序即配置顺序；设置了默认节点时优先用默认节点，否则轮询。留空则使用自动检测。',
       slaveNodeName: '名称',
       slaveNodeNameHint: 'agent 选择节点时使用的唯一名称。',
       slaveNodeKind: '类型',
@@ -597,6 +668,14 @@ window.__ModuleLoader__.load({
 .ld_stat span{font-size:11.5px;color:var(--dsw-alias-label-tertiary)}
 .ld_kv{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--dsw-alias-label-secondary)}
 .ld_kv code{font-size:11.5px}
+.ld_endpoints{display:flex;flex-direction:column;gap:6px}
+.ld_endpoint{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
+.ld_endpoint .ld_small{flex:1 1 180px;min-width:0;overflow-wrap:anywhere}
+.ld_available{display:flex;flex-direction:column;gap:6px}
+.ld_auto{display:flex;flex-direction:column;gap:8px}
+.ld_available_row{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);font-size:12px}
+.ld_available_row input{margin-top:2px}
+.ld_available_row .ld_small{flex:1;min-width:0;overflow-wrap:anywhere}
 .ld_fold{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px}
 .ld_fold>summary{cursor:pointer;font-weight:500;color:var(--dsw-alias-label-secondary)}
 .ld_fold[open]>summary{margin-bottom:10px}
@@ -841,6 +920,29 @@ window.__ModuleLoader__.load({
       return String(template).replace(/\{(\w+)\}/g, (_, key) => (vars && vars[key] !== undefined ? String(vars[key]) : ''))
     }
 
+    /** Reject endpoint numbers that would silently break every model request. */
+    function validateEndpointNumbers(endpoint, t) {
+      const source = endpoint && typeof endpoint === 'object' ? endpoint : {}
+      for (const [field, min, max] of [
+        ['timeoutMs', 1000, 3600000],
+        ['maxOutputTokens', 1, 1000000],
+        ['numCtx', 512, 1048576],
+      ]) {
+        if (source[field] === undefined) continue
+        const value = Number(source[field])
+        if (!Number.isFinite(value) || value < min || value > max) {
+          return { kind: 'err', text: format(t('endpointNumberInvalid'), { field, min, max }) }
+        }
+      }
+      if (source.temperature !== undefined) {
+        const value = Number(source.temperature)
+        if (!Number.isFinite(value) || value < 0 || value > 2) {
+          return { kind: 'err', text: format(t('endpointNumberInvalid'), { field: 'temperature', min: 0, max: 2 }) }
+        }
+      }
+      return null
+    }
+
     function useSnapshot(controller) {
       return useSyncExternalStore(
         useCallback(cb => controller.subscribe(cb), [controller]),
@@ -936,12 +1038,15 @@ window.__ModuleLoader__.load({
       const dirtyRef = useRef(false)
       const [busy, setBusy] = useState('')
       const [message, setMessage] = useState(null)
+      const [subagentNotice, setSubagentNotice] = useState(null)
       const [status, setStatus] = useState(null)
       const [statusError, setStatusError] = useState('')
       const [probe, setProbe] = useState(null)
       const [models, setModels] = useState([])
       const [levelsInfo, setLevelsInfo] = useState(null)
       const [levelsError, setLevelsError] = useState('')
+      const [slaveInfo, setSlaveInfo] = useState(null)
+      const [slaveError, setSlaveError] = useState('')
       const [listText, setListText] = useState(null)
 
       useEffect(() => {
@@ -960,13 +1065,15 @@ window.__ModuleLoader__.load({
       const disabled = !writable || !draft
       const current = draft || saved || {}
 
-      const refreshStatus = useCallback(async () => {
+      const refreshStatus = useCallback(async (probe = false) => {
         try {
-          const payload = await apiFetch('/status')
+          const payload = await apiFetch('/status' + (probe ? '?probe=1' : ''))
           setStatus(payload)
           setStatusError('')
+          return payload
         } catch (error) {
           setStatusError(String(error?.message ?? error))
+          return null
         }
       }, [])
 
@@ -980,10 +1087,22 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      const refreshSlaves = useCallback(async () => {
+        try {
+          const payload = await apiFetch('/slaves')
+          setSlaveInfo(payload)
+          setSlaveError('')
+        } catch (error) {
+          setSlaveInfo(null)
+          setSlaveError(String(error?.message ?? error))
+        }
+      }, [])
+
       useEffect(() => {
         void refreshStatus()
         void refreshLevels()
-      }, [refreshLevels, refreshStatus])
+        void refreshSlaves()
+      }, [refreshLevels, refreshSlaves, refreshStatus])
 
       const update = useCallback((path, value) => {
         setDraft(prev => setIn(prev || {}, path, value))
@@ -1089,6 +1208,11 @@ window.__ModuleLoader__.load({
             if (typeof value !== 'string') return { kind: 'err', text: t('headersHint') }
           }
         }
+        // An empty NumberInput becomes 0. Reject values that would make every
+        // request fail (timeoutMs 0 aborts after 1ms, maxOutputTokens 0 asks for
+        // zero output tokens) instead of silently saving a broken endpoint.
+        const endpointIssue = validateEndpointNumbers(endpoint, t)
+        if (endpointIssue) return endpointIssue
         if (!LEVEL_VALUES.includes(String(current.defaultLevel || 'default'))) {
           return { kind: 'err', text: t('levelsInvalid') }
         }
@@ -1122,6 +1246,54 @@ window.__ModuleLoader__.load({
         return null
       }, [current, endpoint, fallbacks, t])
 
+      /**
+       * Register the endpoint chain (primary + fallbacks) as llm-pi-ai routes so
+       * every configured endpoint becomes usable by slave child agents. One
+       * route per distinct host/credentials group; models share the route.
+       */
+      const syncEndpointRoutes = useCallback(
+        async (configValue, health) => {
+          if (piSnap.status !== 'ready') {
+            return { ok: false, written: 0, error: 'llm-pi-ai settings are unavailable' }
+          }
+          const groups = groupChainEndpoints(configValue, health)
+          if (groups.length === 0) return { ok: true, written: 0 }
+          const existingProviders = piSnap.value && piSnap.value.providers ? piSnap.value.providers : {}
+          const ops = buildChainRouteOps(configValue, health, existingProviders)
+          try {
+            // Route sync is idempotent and only touches this plugin's own
+            // provider ids, so do not fence it with a possibly stale revision
+            // right after another llm-pi-ai edit (Enable/Remove route).
+            const accepted = await piForm.mutate(ops)
+            return accepted
+              ? { ok: true, written: ops.length }
+              : { ok: false, written: 0, error: 'llm-pi-ai rejected the route update' }
+          } catch (error) {
+            return { ok: false, written: 0, error: String(error?.message ?? error) }
+          }
+        },
+        [piForm, piSnap.status],
+      )
+
+      const syncRoutesNow = useCallback(async () => {
+        setBusy('slaveRoutes')
+        setMessage(null)
+        try {
+          const fresh = await refreshStatus(true)
+          const outcome = await syncEndpointRoutes(draft || saved, fresh && fresh.health)
+          if (outcome.ok && outcome.written > 0) {
+            setMessage({ kind: 'ok', text: format(t('slaveAutoRoutesSync'), { count: outcome.written }) })
+          } else if (!outcome.ok) {
+            setMessage({ kind: 'warn', text: format(t('slaveAutoRoutesFailed'), { error: outcome.error }) })
+          } else {
+            setMessage({ kind: 'warn', text: t('slaveAutoEmpty') })
+          }
+          await refreshSlaves()
+        } finally {
+          setBusy('')
+        }
+      }, [draft, refreshSlaves, refreshStatus, saved, syncEndpointRoutes, t])
+
       const save = useCallback(async () => {
         if (!saved || !draft) return
         const invalid = validate()
@@ -1144,15 +1316,36 @@ window.__ModuleLoader__.load({
             return
           }
           setDirty(false)
-          setMessage({ kind: 'ok', text: t('saved') })
-          void refreshStatus()
+          let sync = null
+          if (draft.slaveTeamsEnabled === true) {
+            // Register the configured chain without the previous health filter:
+            // the just-saved primary/fallback models must both appear in the
+            // available-node picker. The explicit "sync now" action can still
+            // skip models the latest probe reports missing.
+            sync = await syncEndpointRoutes(draft, null)
+          }
+          if (sync && sync.written > 0) {
+            setMessage({
+              kind: sync.ok ? 'ok' : 'warn',
+              text:
+                t('saved') +
+                ' ' +
+                (sync.ok
+                  ? format(t('slaveAutoRoutesSync'), { count: sync.written })
+                  : format(t('slaveAutoRoutesFailed'), { error: sync.error })),
+            })
+          } else {
+            setMessage({ kind: 'ok', text: t('saved') })
+          }
+          void refreshStatus(true)
           void refreshLevels()
+          void refreshSlaves()
         } catch (error) {
           setMessage({ kind: 'err', text: t('saveFailed') + ' ' + String(error?.message ?? error) })
         } finally {
           setBusy('')
         }
-      }, [draft, form, refreshLevels, refreshStatus, saved, snap.revision, t, validate])
+      }, [draft, form, refreshLevels, refreshSlaves, refreshStatus, saved, snap.revision, status, syncEndpointRoutes, t, validate])
 
       const discard = useCallback(() => {
         if (!saved) return
@@ -1209,25 +1402,26 @@ window.__ModuleLoader__.load({
 
       const enableSubagentRoute = useCallback(async () => {
         if (!saved || dirty) {
-          setMessage({ kind: 'warn', text: t('subagentNeedsSave') })
+          setSubagentNotice({ kind: 'warn', text: t('subagentNeedsSave') })
           return
         }
         const model = String(saved.endpoint.model || '').trim()
         if (!model) {
-          setMessage({ kind: 'warn', text: t('subagentNeedsModel') })
+          setSubagentNotice({ kind: 'warn', text: t('subagentNeedsModel') })
           return
         }
         if (!piReady || !subReady) {
-          setMessage({ kind: 'warn', text: t('subagentUnavailable') })
+          setSubagentNotice({ kind: 'warn', text: t('subagentUnavailable') })
           return
         }
         setBusy('subagent')
-        setMessage(null)
+        setSubagentNotice(null)
         try {
-          const provider = buildPiProvider(saved.endpoint)
+          const existingProvider = piReady && piSnap.value && piSnap.value.providers ? piSnap.value.providers[ROUTE_PROVIDER] : undefined
+          const provider = buildPiProvider(saved.endpoint, undefined, undefined, existingProvider)
           const piOk = await piForm.mutate([{ op: 'set', path: ['providers', ROUTE_PROVIDER], value: provider }], piSnap.revision)
           if (!piOk) {
-            setMessage({ kind: 'err', text: t('subagentFailed') })
+            setSubagentNotice({ kind: 'err', text: t('subagentFailed') })
             return
           }
           const currentRoutes = Array.isArray(subSnap.value.allowedModels) ? subSnap.value.allowedModels : []
@@ -1241,10 +1435,10 @@ window.__ModuleLoader__.load({
             ],
             subSnap.revision,
           )
-          setMessage({ kind: subOk ? 'ok' : 'err', text: subOk ? t('subagentDone') : t('subagentFailed') })
+          setSubagentNotice({ kind: subOk ? 'ok' : 'err', text: subOk ? t('subagentDone') : t('subagentFailed') })
           void refreshStatus()
         } catch (error) {
-          setMessage({ kind: 'err', text: t('subagentFailed') + ' ' + String(error?.message ?? error) })
+          setSubagentNotice({ kind: 'err', text: t('subagentFailed') + ' ' + String(error?.message ?? error) })
         } finally {
           setBusy('')
         }
@@ -1253,28 +1447,39 @@ window.__ModuleLoader__.load({
       const disableSubagentRoute = useCallback(async () => {
         if (!piReady || !subReady) return
         setBusy('subagent')
-        setMessage(null)
+        setSubagentNotice(null)
         try {
-          if (routeRegistered) {
-            await piForm.mutate([{ op: 'unset', path: ['providers', ROUTE_PROVIDER] }], piSnap.revision)
+          const providers = piSnap.value && piSnap.value.providers ? piSnap.value.providers : {}
+          const ops = buildChainUnrouteOps(providers)
+          // No expected revision for owned-route removal: the route sync may
+          // have just bumped the mirror. Never report success on a rejected
+          // mutation (the old code silently claimed "removed").
+          const piOk = ops.length === 0 ? true : await piForm.mutate(ops)
+          if (!piOk) {
+            setSubagentNotice({ kind: 'err', text: t('subagentFailed') })
+            return
           }
           const currentRoutes = Array.isArray(subSnap.value.allowedModels) ? subSnap.value.allowedModels : []
           const routes = currentRoutes.filter(route => route && route.provider !== ROUTE_PROVIDER)
-          await subForm.mutate(
+          const subOk = await subForm.mutate(
             [
               { op: 'set', path: ['allowedModels'], value: routes },
               { op: 'set', path: ['enabled'], value: routes.length > 0 },
             ],
             subSnap.revision,
           )
-          setMessage({ kind: 'ok', text: t('subagentRemoved') })
+          if (!subOk) {
+            setSubagentNotice({ kind: 'err', text: t('subagentFailed') })
+            return
+          }
+          setSubagentNotice({ kind: 'ok', text: t('subagentRemoved') })
           void refreshStatus()
         } catch (error) {
-          setMessage({ kind: 'err', text: t('subagentFailed') + ' ' + String(error?.message ?? error) })
+          setSubagentNotice({ kind: 'err', text: t('subagentFailed') + ' ' + String(error?.message ?? error) })
         } finally {
           setBusy('')
         }
-      }, [piForm, piReady, piSnap, refreshStatus, routeRegistered, subForm, subReady, subSnap, t])
+      }, [piForm, piReady, piSnap, refreshStatus, subForm, subReady, subSnap, t])
 
       if (snap.status === 'loading') return h('div', { className: 'ld_root' }, h('div', { className: 'ld_msg' }, t('loading')))
       if (snap.status === 'unavailable') return h('div', { className: 'ld_root' }, h('div', { className: 'ld_msg warn' }, t('unavailable')))
@@ -1302,7 +1507,7 @@ window.__ModuleLoader__.load({
         message ? h('div', { className: 'ld_msg ' + (message.kind || '') }, message.text) : null,
         statusError ? h('div', { className: 'ld_msg err' }, format(t('statusFailed'), { error: statusError })) : null,
 
-        h(HealthCard, { t, health, status, onRefresh: refreshStatus, busy }),
+        h(HealthCard, { t, health, status, onRefresh: () => refreshStatus(true), busy }),
 
         h(
           'section',
@@ -1361,20 +1566,6 @@ window.__ModuleLoader__.load({
           ),
           h(
             'div',
-            { className: 'ld_row' },
-            h(
-              Field,
-              { label: t('apiKeyEnv'), hint: t('apiKeyEnvHint') },
-              h(TextInput, { value: endpoint.apiKeyEnv, disabled, placeholder: 'LOCAL_MODEL_API_KEY', onChange: value => setEndpoint('apiKeyEnv', value) }),
-            ),
-            h(
-              Field,
-              { label: t('timeoutMs') },
-              h(NumberInput, { value: endpoint.timeoutMs, disabled, min: 1000, onChange: value => setEndpoint('timeoutMs', value) }),
-            ),
-          ),
-          h(
-            'div',
             { className: 'ld_actions' },
             h('button', { type: 'button', className: 'ld_btn', disabled: disabled || busy === 'probe', onClick: () => void runProbe(false) }, busy === 'probe' ? t('testing') : t('test')),
             h('button', { type: 'button', className: 'ld_btn', disabled: disabled || busy === 'models', onClick: () => void runProbe(true) }, busy === 'models' ? t('testing') : t('models')),
@@ -1394,6 +1585,12 @@ window.__ModuleLoader__.load({
                 Field,
                 { label: t('think'), hint: t('thinkHint') },
                 h(Checkbox, { checked: endpoint.think === true, disabled, label: t('think'), onChange: value => setEndpoint('think', value) }),
+              ),
+              h(Field, { label: t('timeoutMs') }, h(NumberInput, { value: endpoint.timeoutMs, disabled, min: 1000, onChange: value => setEndpoint('timeoutMs', value) })),
+              h(
+                Field,
+                { label: t('apiKeyEnv'), hint: t('apiKeyEnvHint') },
+                h(TextInput, { value: endpoint.apiKeyEnv, disabled, placeholder: 'LOCAL_MODEL_API_KEY', onChange: value => setEndpoint('apiKeyEnv', value) }),
               ),
             ),
             h(
@@ -1448,9 +1645,9 @@ window.__ModuleLoader__.load({
         ),
 
         h(
-          'section',
-          { className: 'ld_card' },
-          h('h3', null, t('fallback')),
+          'details',
+          { className: 'ld_fold' },
+          h('summary', null, t('fallback') + ' · ' + String(fallbacks.length)),
           h('div', { className: 'ld_small' }, t('fallbackHint')),
           fallbacks.map((fallback, index) =>
             h(
@@ -1474,7 +1671,6 @@ window.__ModuleLoader__.load({
                 ),
                 h(Field, { label: t('baseURL') }, h(TextInput, { value: fallback.baseURL, disabled, onChange: value => setFallback(index, 'baseURL', value) })),
                 h(Field, { label: t('model') }, h(TextInput, { value: fallback.model, disabled, onChange: value => setFallback(index, 'model', value) })),
-                h(Field, { label: t('timeoutMs') }, h(NumberInput, { value: fallback.timeoutMs, disabled, min: 1000, onChange: value => setFallback(index, 'timeoutMs', value) })),
               ),
               h(
                 'div',
@@ -1525,9 +1721,9 @@ window.__ModuleLoader__.load({
         ),
 
         h(
-          'section',
-          { className: 'ld_card' },
-          h('h3', null, t('limits')),
+          'details',
+          { className: 'ld_fold' },
+          h('summary', null, t('limits')),
           h(
             'div',
             { className: 'ld_row' },
@@ -1574,6 +1770,7 @@ window.__ModuleLoader__.load({
           routeRegistered,
           subAllowed,
           busy,
+          notice: subagentNotice,
           onEnable: enableSubagentRoute,
           onDisable: disableSubagentRoute,
           savedEndpoint: saved.endpoint,
@@ -1603,6 +1800,12 @@ window.__ModuleLoader__.load({
           providers: piProviders,
           routeRegistered,
           endpointModel: String((saved.endpoint && saved.endpoint.model) || '').trim(),
+          autoInfo: slaveInfo,
+          autoError: slaveError,
+          autoDiscover: current.slaveTeamAutoDiscover !== false,
+          autoBusy: busy === 'slaveRoutes',
+          onRefreshAuto: refreshSlaves,
+          onSyncRoutes: syncRoutesNow,
           onSetNode: setNode,
           onAddNode: addNode,
           onRemoveNode: removeNode,
@@ -1664,23 +1867,150 @@ window.__ModuleLoader__.load({
       return ops
     }
 
-    function buildPiProvider(endpoint) {
+    function normalizeChainBase(baseURL) {
+      return String(baseURL || '').trim().replace(/\/+$/, '')
+    }
+
+    /**
+     * Endpoint/model pairs the live health probe reports as missing. Registering
+     * them as routes would create slave nodes that start and then fail on the
+     * first model call, so the automatic route sync skips them until they exist.
+     */
+    function missingChainModels(health) {
+      const missing = new Set()
+      if (!health || typeof health !== 'object') return missing
+      const entries = [health.primary, ...(Array.isArray(health.fallbacks) ? health.fallbacks : [])]
+      for (const entry of entries) {
+        if (!entry || entry.modelFound !== false) continue
+        const base = normalizeChainBase(entry.baseURL)
+        const model = String(entry.model || '').trim()
+        if (base && model) missing.add(base + '|' + model)
+      }
+      return missing
+    }
+
+    /**
+     * Group the endpoint chain by wire target so one llm-pi-ai provider can
+     * carry every model that lives on the same host/credentials. This is what
+     * makes the fallback endpoints usable as slave routes: pi-ai routes have a
+     * single baseURL, so each distinct host needs its own route.
+     * Models the latest health probe reports missing are skipped.
+     */
+    function groupChainEndpoints(config, health) {
+      const source = config && typeof config === 'object' ? config : {}
+      const missing = missingChainModels(health)
+      const chain = [source.endpoint, ...(Array.isArray(source.fallbackEndpoints) ? source.fallbackEndpoints : [])]
+      const groups = new Map()
+      for (const endpoint of chain) {
+        if (!endpoint || typeof endpoint !== 'object') continue
+        const baseURL = normalizeChainBase(endpoint.baseURL)
+        const model = String(endpoint.model || '').trim()
+        if (!baseURL || !model) continue
+        if (missing.has(baseURL + '|' + model)) continue
+        const key = [
+          endpoint.kind === 'openai-compatible' ? 'openai' : 'ollama',
+          baseURL,
+          JSON.stringify(endpoint.headers || {}),
+          String(endpoint.apiKey || ''),
+          String(endpoint.apiKeyEnv || ''),
+        ].join('\u0000')
+        if (!groups.has(key)) groups.set(key, { endpoint, models: [] })
+        const group = groups.get(key)
+        if (!group.models.includes(model)) group.models.push(model)
+      }
+      return [...groups.values()]
+    }
+
+
+    /** Display names this plugin generates; anything else is a user customization. */
+    function isManagedDisplayName(value) {
+      return /^本地\/降智模型（(?:SlaveAgentTeams 自动路由|dsh-local-delegate)）/.test(String(value || '').trim())
+    }
+
+    function modelIdOf(model) {
+      return String(typeof model === 'string' ? model : model && (model.id || model.model) || '').trim()
+    }
+
+    /**
+     * Build one llm-pi-ai provider. When the provider already exists, preserve
+     * user-owned fields instead of overwriting them: a custom displayName, the
+     * user's model order/extra model metadata, extra headers, and fields this
+     * plugin does not manage. Wire fields (api/baseURL/defaults) still follow
+     * the current endpoint so slave routes cannot drift.
+     */
+    function buildPiProvider(endpoint, models, displayName, existing) {
+      const prior = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : null
       const raw = String(endpoint.baseURL || '').trim().replace(/\/+$/, '')
       const baseURL = /\/v\d+$/.test(raw) ? raw : raw + '/v1'
       const headers = { ...(endpoint.headers || {}) }
+      const priorHeaders = prior && prior.headers && typeof prior.headers === 'object' ? prior.headers : {}
       if (endpoint.apiKey) headers.Authorization = 'Bearer ' + endpoint.apiKey
-      else if (!headers.Authorization && (!endpoint.kind || endpoint.kind === 'ollama-native')) headers.Authorization = 'Bearer ollama'
-      const provider = {
-        displayName: '本地/降智模型（dsh-local-delegate）',
+      else if (!headers.Authorization && !priorHeaders.Authorization && (!endpoint.kind || endpoint.kind === 'ollama-native')) {
+        headers.Authorization = 'Bearer ollama'
+      }
+      const modelIds = (Array.isArray(models) ? models : [endpoint.model])
+        .map(model => String(model || '').trim())
+        .filter(Boolean)
+      const generated = {
+        displayName: displayName || '本地/降智模型（dsh-local-delegate）',
         api: 'openai-completions',
         baseURL,
-        models: [{ id: String(endpoint.model || '').trim() }],
+        models: (modelIds.length > 0 ? modelIds : ['']).map(id => ({ id })),
         defaultContextWindow: Number(endpoint.numCtx) || 32768,
         defaultMaxTokens: Number(endpoint.maxOutputTokens) || 4096,
       }
-      if (Object.keys(headers).length > 0) provider.headers = headers
-      else if (endpoint.apiKeyEnv) provider.apiKeyEnv = endpoint.apiKeyEnv
+      if (Object.keys(headers).length > 0) generated.headers = headers
+      else if (endpoint.apiKeyEnv) generated.apiKeyEnv = endpoint.apiKeyEnv
+      if (!prior) return generated
+
+      const provider = { ...prior, ...generated }
+      if (typeof prior.displayName === 'string' && prior.displayName.trim() && !isManagedDisplayName(prior.displayName)) {
+        provider.displayName = prior.displayName
+      }
+      const mergedModels = new Map()
+      for (const model of Array.isArray(prior.models) ? prior.models : []) {
+        const id = modelIdOf(model)
+        if (id) mergedModels.set(id, model)
+      }
+      for (const model of generated.models) {
+        if (!mergedModels.has(model.id)) mergedModels.set(model.id, model)
+      }
+      provider.models = [...mergedModels.values()]
+      const mergedHeaders = { ...priorHeaders, ...(generated.headers || {}) }
+      if (Object.keys(mergedHeaders).length > 0) provider.headers = mergedHeaders
       return provider
+    }
+
+    /** Stable provider id per chain group: local-delegate, local-delegate-fb1… */
+    function chainRouteProviderId(index) {
+      return index === 0 ? ROUTE_PROVIDER : ROUTE_PROVIDER + '-fb' + String(index)
+    }
+
+    /** Provider ids this plugin owns: the primary route plus its fallback chain. */
+    function chainRouteIds(providers) {
+      return Object.keys(providers && typeof providers === 'object' ? providers : {}).filter(
+        id => id === ROUTE_PROVIDER || id.startsWith(ROUTE_PROVIDER + '-fb'),
+      )
+    }
+
+    /** llm-pi-ai unset ops for every route this plugin may have registered. */
+    function buildChainUnrouteOps(providers) {
+      return chainRouteIds(providers).map(id => ({ op: 'unset', path: ['providers', id] }))
+    }
+
+    /** llm-pi-ai config ops that register the whole endpoint chain as routes. */
+    function buildChainRouteOps(config, health, existingProviders) {
+      const providers = existingProviders && typeof existingProviders === 'object' ? existingProviders : {}
+      return groupChainEndpoints(config, health).map((group, index) => ({
+        op: 'set',
+        path: ['providers', chainRouteProviderId(index)],
+        value: buildPiProvider(
+          group.endpoint,
+          group.models,
+          '本地/降智模型（SlaveAgentTeams 自动路由）' + (index > 0 ? ' #' + String(index + 1) : ''),
+          providers[chainRouteProviderId(index)],
+        ),
+      }))
     }
 
     function HealthCard({ t, health, status, onRefresh, busy }) {
@@ -1689,6 +2019,20 @@ window.__ModuleLoader__.load({
       const badge = state === 'available' ? 'ok' : state === 'degraded' ? 'warn' : state === 'unavailable' ? 'err' : ''
       const effective = health && health.effective ? health.effective : health && health.primary ? health.primary : null
       const savedConfig = status && status.config ? status.config : null
+      const primary = health && health.primary ? health.primary : null
+      const fallbacks = health && Array.isArray(health.fallbacks) ? health.fallbacks : []
+      const endpointRows = []
+      if (primary) endpointRows.push({ key: 'primary', label: t('healthPrimary'), entry: primary })
+      for (const [index, entry] of fallbacks.entries()) {
+        if (entry) endpointRows.push({ key: 'fallback-' + index, label: t('healthFallback') + ' ' + String(index + 1), entry })
+      }
+      const statusOf = entry => {
+        if (!entry || entry.reachable !== true) {
+          return { label: entry && entry.reachable === false ? t('healthOffline') : t('healthUnknown'), badge: entry && entry.reachable === false ? 'err' : '' }
+        }
+        if (entry.modelFound !== true) return { label: t('healthModelMissing'), badge: 'warn' }
+        return { label: t('healthOnline'), badge: 'ok' }
+      }
       return h(
         'section',
         { className: 'ld_card' },
@@ -1710,6 +2054,33 @@ window.__ModuleLoader__.load({
               h('span', null, t('model') + ': ', h('code', null, savedConfig.endpoint.model || '(unset)')),
               h('span', null, t('apiKey') + ': ', h('code', null, savedConfig.endpoint.apiKeyConfigured ? 'configured' : 'not set')),
               savedConfig.endpoint.apiKeyEnv ? h('span', null, t('apiKeyEnv') + ': ', h('code', null, savedConfig.endpoint.apiKeyEnv)) : null,
+            )
+          : null,
+        endpointRows.length > 0
+          ? h(
+              'div',
+              null,
+              h('div', { className: 'ld_small' }, t('healthEndpoints')),
+              h(
+                'div',
+                { className: 'ld_endpoints', style: { marginTop: '6px' } },
+                endpointRows.map(row => {
+                  const view = statusOf(row.entry)
+                  return h(
+                    'div',
+                    { className: 'ld_endpoint', key: row.key },
+                    h('span', { className: 'ld_chip' }, row.label),
+                    h('code', null, row.entry.baseURL || '(unset)'),
+                    h('span', { className: 'ld_small' }, row.entry.model || '(unset)'),
+                    h('span', { className: 'ld_badge ' + view.badge }, view.label),
+                    row.entry.latencyMs !== null && row.entry.latencyMs !== undefined
+                      ? h('span', { className: 'ld_small' }, String(row.entry.latencyMs) + 'ms')
+                      : null,
+                    row.entry.error ? h('span', { className: 'ld_small' }, String(row.entry.error).slice(0, 180)) : null,
+                  )
+                }),
+              ),
+              fallbacks.length === 0 ? h('div', { className: 'ld_small' }, t('healthNoFallbacks')) : null,
             )
           : null,
         effective
@@ -1738,7 +2109,7 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'ld_msg ' + (probe.ok ? (probe.modelFound ? 'ok' : 'warn') : 'err') }, lines.join(' '))
     }
 
-    function SubagentCard({ t, piReady, subReady, routeRegistered, subAllowed, busy, onEnable, onDisable, savedEndpoint }) {
+    function SubagentCard({ t, piReady, subReady, routeRegistered, subAllowed, busy, notice, onEnable, onDisable, savedEndpoint }) {
       const available = piReady && subReady
       const active = routeRegistered && subAllowed
       return h(
@@ -1749,7 +2120,6 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'ld_kv' },
-          h('span', null, t('pid') + ': ', h('code', null, ROUTE_PROVIDER)),
           h('span', null, t('model') + ': ', h('code', null, (savedEndpoint && savedEndpoint.model) || '(unset)')),
           h('span', null, active ? t('subagentEnabled') : available ? t('subagentNotEnabled') : t('subagentUnavailable')),
         ),
@@ -1769,7 +2139,10 @@ window.__ModuleLoader__.load({
               )
             : null,
         ),
-        h('div', { className: 'ld_small' }, 'llm-pi-ai: ' + (piReady ? 'ready' : 'unavailable') + ' · ' + 'subagent-model-selection-settings: ' + (subReady ? 'ready' : 'unavailable')),
+        notice ? h('div', { className: 'ld_msg ' + (notice.kind || ''), role: 'status' }, notice.text) : null,
+        !available
+          ? h('div', { className: 'ld_small' }, 'llm-pi-ai: ' + (piReady ? 'ready' : 'unavailable') + ' · ' + 'subagent-model-selection-settings: ' + (subReady ? 'ready' : 'unavailable'))
+          : null,
       )
     }
 
@@ -1837,7 +2210,7 @@ window.__ModuleLoader__.load({
           ),
           h(
             Field,
-            { label: t('levelsEnabled'), hint: t('levelsEnabledHint') },
+            { hint: t('levelsEnabledHint') },
             h(Checkbox, {
               checked: levelsEnabled,
               disabled,
@@ -1847,7 +2220,7 @@ window.__ModuleLoader__.load({
           ),
           h(
             Field,
-            { label: t('composerLevel'), hint: t('composerLevelHint') },
+            { hint: t('composerLevelHint') },
             h(Checkbox, {
               checked: config.composerLevelPicker !== false,
               disabled,
@@ -1860,22 +2233,25 @@ window.__ModuleLoader__.load({
         routeWarning ? h('div', { className: 'ld_msg warn' }, t('levelsNeedsRoute')) : null,
         h('div', { className: 'ld_small' }, t('levelsTeamNote')),
         h(
-          'div',
-          { className: 'ld_head', style: { marginTop: '4px' } },
-          h('h3', null, t('levelsWorkspaces')),
-          h('span', { className: 'grow' }),
+          'details',
+          { className: 'ld_fold' },
+          h('summary', null, t('levelsWorkspaces') + ' · ' + String(workspaceRows.length) + (levelsError || levelsUnavailable ? ' (!)' : '')),
           h(
-            'button',
-            { type: 'button', className: 'ld_btn', disabled, onClick: () => void onRefreshLevels() },
-            t('levelsRefresh'),
+            'div',
+            { className: 'ld_actions', style: { marginTop: '10px' } },
+            h(
+              'button',
+              { type: 'button', className: 'ld_btn', disabled, onClick: () => void onRefreshLevels() },
+              t('levelsRefresh'),
+            ),
           ),
+          h('div', { className: 'ld_small' }, t('levelsWorkspacesHint')),
+          levelsError ? h('div', { className: 'ld_msg err' }, format(t('levelsLoadFailed'), { error: levelsError })) : null,
+          levelsUnavailable ? h('div', { className: 'ld_msg warn' }, t('levelsUnavailable')) : null,
+          workspaceRows.length > 0
+            ? h('div', { className: 'ld_nodes' }, workspaceRows)
+            : h('div', { className: 'ld_msg' }, t('levelsNoWorkspaces') + ' ' + t('levelsNoWorkspacesHint')),
         ),
-        h('div', { className: 'ld_small' }, t('levelsWorkspacesHint')),
-        levelsError ? h('div', { className: 'ld_msg err' }, format(t('levelsLoadFailed'), { error: levelsError })) : null,
-        levelsUnavailable ? h('div', { className: 'ld_msg warn' }, t('levelsUnavailable')) : null,
-        workspaceRows.length > 0
-          ? h('div', { className: 'ld_nodes' }, workspaceRows)
-          : h('div', { className: 'ld_msg' }, t('levelsNoWorkspaces') + ' ' + t('levelsNoWorkspacesHint')),
         h(
           'details',
           { className: 'ld_fold' },
@@ -2026,6 +2402,12 @@ window.__ModuleLoader__.load({
       providers,
       routeRegistered,
       endpointModel,
+      autoInfo,
+      autoError,
+      autoDiscover = true,
+      autoBusy,
+      onRefreshAuto,
+      onSyncRoutes,
       onSetNode,
       onAddNode,
       onRemoveNode,
@@ -2034,19 +2416,111 @@ window.__ModuleLoader__.load({
       const config = current || {}
       const enabled = config.slaveTeamsEnabled === true
       const nodes = nodesOf(config)
-      const catalog = Array.isArray(providers) ? providers : []
+      const autoMode = enabled && nodes.length === 0 && autoDiscover !== false
+      const effectiveModel = node => String((node && node.model) || endpointModel || '').trim()
+      const isChainProvider = node => {
+        const provider = String((node && node.provider) || '').trim()
+        return provider === ROUTE_PROVIDER || provider.startsWith(ROUTE_PROVIDER + '-fb')
+      }
+      const detectedAll = autoInfo && Array.isArray(autoInfo.detected)
+        ? autoInfo.detected
+        : autoInfo && Array.isArray(autoInfo.nodes)
+          ? autoInfo.nodes
+          : []
+      const chainDetected = detectedAll.filter(isChainProvider)
+      // Prefer the endpoint-chain routes when they exist; otherwise keep every
+      // mounted route so auto mode still works before a chain route is synced.
+      const detected = chainDetected.length > 0 ? chainDetected : detectedAll
+      const otherDetected = chainDetected.length > 0 ? detectedAll.filter(node => !isChainProvider(node)) : []
+      const nodeKey = node => `${String((node && node.provider) || '').trim()}\u0000${effectiveModel(node)}`
+      const selectedKeys = new Set(nodes.map(nodeKey))
+      const implicitAll = enabled && nodes.length === 0 && autoDiscover !== false
+      const isDetectedSelected = node => implicitAll || selectedKeys.has(nodeKey(node))
+      const selectedDetectedCount = detected.filter(isDetectedSelected).length
+      const toSlaveNode = (node, base) => {
+        const provider = String((node && node.provider) || '').trim()
+        const model = effectiveModel(node)
+        return {
+          name: uniqueSlaveName(base, String((node && node.name) || '').trim() || provider + '/' + model),
+          kind: node && node.kind === 'cloud' ? 'cloud' : 'local',
+          provider,
+          model,
+          note: String((node && node.note) || ''),
+        }
+      }
+      const toggleDetected = (node, checked) => {
+        let next = implicitAll ? [] : nodes.map(entry => ({ ...entry }))
+        if (implicitAll) {
+          for (const entry of detected) next.push(toSlaveNode(entry, next))
+        }
+        const key = nodeKey(node)
+        if (checked) {
+          if (!next.some(entry => nodeKey(entry) === key)) next.push(toSlaveNode(node, next))
+        } else {
+          next = next.filter(entry => nodeKey(entry) !== key)
+        }
+        update(['slaveNodes'], next)
+      }
+      const selectAllDetected = () => {
+        const next = []
+        for (const entry of nodes) {
+          if (!next.some(node => nodeKey(node) === nodeKey(entry))) next.push({ ...entry, model: effectiveModel(entry) })
+        }
+        for (const entry of detected) {
+          if (!next.some(node => nodeKey(node) === nodeKey(entry))) next.push(toSlaveNode(entry, next))
+        }
+        update(['slaveNodes'], next)
+      }
+
+      const detectedProviders = autoInfo && Array.isArray(autoInfo.providers) ? autoInfo.providers : []
+      const catalogById = new Map()
+      for (const entry of Array.isArray(providers) ? providers : []) catalogById.set(entry.id, { id: entry.id, models: [...(entry.models || [])] })
+      for (const entry of detectedProviders) {
+        const id = String(entry && entry.id || '').trim()
+        if (!id) continue
+        const existing = catalogById.get(id) || { id, models: [] }
+        const models = new Set([...(existing.models || []), ...(Array.isArray(entry.models) ? entry.models : [])])
+        catalogById.set(id, { id, models: [...models] })
+      }
+      const catalog = [...catalogById.values()].sort((left, right) => left.id.localeCompare(right.id))
       const providerIds = catalog.map(entry => entry.id)
       const providerSet = new Set(providerIds)
       const nodeNames = nodes.map(node => String(node.name || '').trim()).filter(Boolean)
       const defaultNode = String(config.slaveTeamDefaultNode || '')
       const hasLocalNode = nodes.some(node => String((node && node.provider) || '').trim() === ROUTE_PROVIDER)
-      const localRouteMissing = !routeRegistered && (hasLocalNode || (enabled && nodes.length === 0))
+      const localRouteMissing = !autoMode && !routeRegistered && (hasLocalNode || (enabled && nodes.length === 0))
       const unregistered = piReady
         ? nodes.filter(node => {
             const provider = String((node && node.provider) || '').trim()
             return provider && provider !== ROUTE_PROVIDER && !providerSet.has(provider)
           })
         : []
+      const unknownModel = piReady
+        ? nodes.filter(node => {
+            const provider = String((node && node.provider) || '').trim()
+            const model = String((node && node.model) || '').trim()
+            if (!provider || !model) return false
+            const entry = catalogById.get(provider)
+            return Boolean(entry && Array.isArray(entry.models) && entry.models.length > 0 && !entry.models.includes(model))
+          })
+        : []
+      const cleanSlaveNodes = () => {
+        const next = []
+        for (const node of nodes) {
+          const provider = String((node && node.provider) || '').trim()
+          const model = effectiveModel(node)
+          if (!provider || !model) continue
+          if (next.some(entry => nodeKey(entry) === `${provider}\u0000${model}`)) continue
+          const entry = catalogById.get(provider)
+          if (entry && Array.isArray(entry.models) && entry.models.length > 0 && !entry.models.includes(model)) continue
+          const name = uniqueSlaveName(next, String((node && node.name) || '').trim() || `${provider}/${model}`)
+          next.push({ ...node, model, name })
+        }
+        update(['slaveNodes'], next)
+      }
+      const autoIssues = autoInfo && Array.isArray(autoInfo.issues) ? autoInfo.issues : []
+      const autoProvidersCount = new Set(detected.map(node => String((node && node.provider) || '').trim()).filter(Boolean)).size
+      const otherDetectedProviders = [...new Set(otherDetected.map(node => String((node && node.provider) || '').trim()).filter(Boolean))]
       const implicitNode = ROUTE_PROVIDER + '/' + (endpointModel || '(model unset)')
       const defaultNodeOptions = [{ value: '', label: t('slaveRoundRobin') }].concat(
         nodeNames.map(name => ({ value: name, label: name })),
@@ -2139,14 +2613,28 @@ window.__ModuleLoader__.load({
           ),
         )
       })
+      const discoveryActions = h(
+        'div',
+        { className: 'ld_actions', style: { marginTop: '6px' } },
+        h(
+          'button',
+          { type: 'button', className: 'ld_btn', disabled: disabled || autoBusy, onClick: () => void onRefreshAuto() },
+          autoBusy ? t('loading') : t('slaveAutoRefresh'),
+        ),
+        h(
+          'button',
+          { type: 'button', className: 'ld_btn', disabled: disabled || !piReady || autoBusy, onClick: () => void onSyncRoutes() },
+          t('slaveAutoSyncNow'),
+        ),
+      )
       return h(
         'section',
         { className: 'ld_card' },
-        h('h3', null, t('slaveTeams')),
-        h('div', { className: 'ld_small' }, t('slaveTeamsHint')),
         h(
           'div',
-          { className: 'ld_actions' },
+          { className: 'ld_head' },
+          h('h3', null, t('slaveTeams')),
+          h('span', { className: 'grow' }),
           h(Checkbox, {
             checked: enabled,
             disabled,
@@ -2154,136 +2642,226 @@ window.__ModuleLoader__.load({
             onChange: value => update(['slaveTeamsEnabled'], value),
           }),
         ),
-        h('div', { className: 'ld_small' }, t('slaveTeamsEnableHint')),
-        !enabled ? h('div', { className: 'ld_msg' }, t('slaveDisabledHint')) : null,
-        localRouteMissing ? h('div', { className: 'ld_msg warn' }, t('slaveRouteMissing')) : null,
-        unregistered.length > 0
-          ? unregistered.map((node, index) =>
+        h('div', { className: 'ld_small' }, t('slaveTeamsShortHint')),
+        !enabled
+          ? h('div', { className: 'ld_msg' }, t('slaveDisabledHint'))
+          : h(
+              'div',
+              { className: 'ld_auto' },
+              localRouteMissing ? h('div', { className: 'ld_msg warn' }, t('slaveRouteMissing')) : null,
+              unregistered.length > 0
+                ? unregistered.map((node, index) =>
+                    h(
+                      'div',
+                      { className: 'ld_msg warn', key: 'slave-unregistered-' + index },
+                      format(t('slaveProviderUnregistered'), { name: String(node.name || '?'), provider: String(node.provider || '') }),
+                    ),
+                  )
+                : null,
+              unknownModel.length > 0
+                ? unknownModel.map((node, index) =>
+                    h(
+                      'div',
+                      { className: 'ld_msg warn', key: 'slave-unknown-model-' + index },
+                      format(t('slaveModelUnregistered'), {
+                        name: String(node.name || '?'),
+                        provider: String(node.provider || ''),
+                        model: String(node.model || ''),
+                      }),
+                    ),
+                  )
+                : null,
+              nodes.length === 0 && autoDiscover === false
+                ? h('div', { className: 'ld_msg warn' }, format(t('slaveImplicitNode'), { node: implicitNode }))
+                : null,
+              detected.length > 0
+                ? h(
+                    'div',
+                    null,
+                    h(
+                      'div',
+                      { className: 'ld_kv' },
+                      h('span', null, h('strong', null, t('slaveAvailable'))),
+                      h('span', null, format(t('slaveAvailableSelected'), { selected: selectedDetectedCount, total: detected.length })),
+                      autoMode ? h('span', { className: 'ld_badge' }, t('slaveAutoMode')) : null,
+                    ),
+                    h('div', { className: 'ld_small' }, format(t('slaveAutoDetected'), { count: autoProvidersCount, nodes: detected.length })),
+                    h(
+                      'div',
+                      { className: 'ld_available' },
+                      detected.slice(0, MAX_SLAVE_NODES).map((node, index) =>
+                        h(
+                          'label',
+                          { className: 'ld_available_row', key: 'slave-available-' + index },
+                          h('input', {
+                            type: 'checkbox',
+                            checked: isDetectedSelected(node),
+                            disabled,
+                            onChange: event => toggleDetected(node, event.target.checked),
+                          }),
+                          h('span', { className: 'ld_chip' }, node.kind === 'cloud' ? t('slaveNodeCloud') : t('slaveNodeLocal')),
+                          h('code', null, String(node.provider || '') + '/' + String(node.model || '')),
+                          h('span', { className: 'ld_small' }, String(node.name || '')),
+                        ),
+                      ),
+                    ),
+                    h(
+                      'div',
+                      { className: 'ld_actions', style: { marginTop: '6px' } },
+                      h(
+                        'button',
+                        { type: 'button', className: 'ld_btn', disabled, onClick: selectAllDetected },
+                        t('slaveSelectAll'),
+                      ),
+                      discoveryActions,
+                    ),
+                  )
+                : h(
+                    'div',
+                    null,
+                    h('div', { className: 'ld_msg warn' }, autoMode ? t('slaveAutoEmpty') : t('slaveAvailableEmpty')),
+                    discoveryActions,
+                  ),
+              autoError ? h('div', { className: 'ld_msg warn' }, String(autoError)) : null,
               h(
-                'div',
-                { className: 'ld_msg warn', key: 'slave-unregistered-' + index },
-                format(t('slaveProviderUnregistered'), { name: String(node.name || '?'), provider: String(node.provider || '') }),
+                'details',
+                { className: 'ld_fold', style: { marginTop: '10px' } },
+                h('summary', null, t('slaveAdvanced')),
+                h(
+                  'div',
+                  { className: 'ld_actions' },
+                  h(Checkbox, {
+                    checked: autoDiscover !== false,
+                    disabled,
+                    label: t('slaveAutoDiscover'),
+                    onChange: value => update(['slaveTeamAutoDiscover'], value),
+                  }),
+                ),
+                h('div', { className: 'ld_small' }, t('slaveAutoDiscoverHint')),
+                autoDiscover === false ? h('div', { className: 'ld_small' }, t('slaveAutoOffHint')) : null,
+                otherDetected.length > 0
+                  ? h(
+                      'div',
+                      { className: 'ld_small' },
+                      format(t('slaveOtherRoutesHint'), {
+                        count: otherDetected.length,
+                        providers: otherDetectedProviders.join(', '),
+                      }),
+                    )
+                  : null,
+                autoIssues.length > 0
+                  ? h('div', { className: 'ld_small' }, format(t('slaveAutoIssues'), { issues: autoIssues.slice(0, 3).join('; ') }))
+                  : null,
+                h(
+                  'div',
+                  { className: 'ld_row', style: { marginTop: '10px' } },
+                  h(
+                    Field,
+                    { label: t('slaveDefaultNode') },
+                    h(Select, {
+                      value: defaultNode,
+                      disabled,
+                      options: defaultNodeOptions,
+                      onChange: value => update(['slaveTeamDefaultNode'], value),
+                    }),
+                  ),
+                  h(
+                    Field,
+                    { label: t('slaveMaxSlaves'), hint: t('slaveMaxSlavesHint') },
+                    h(NumberInput, {
+                      value: config.slaveTeamMaxSlaves,
+                      disabled,
+                      min: 1,
+                      max: MAX_SLAVES,
+                      onChange: value => update(['slaveTeamMaxSlaves'], value),
+                    }),
+                  ),
+                  h(
+                    Field,
+                    { label: t('slavePreset') },
+                    h(TextInput, {
+                      value: config.slaveTeamPreset,
+                      disabled,
+                      placeholder: 'standard',
+                      onChange: value => update(['slaveTeamPreset'], value),
+                    }),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'ld_row' },
+                  h(
+                    Field,
+                    { label: t('slaveFallback') },
+                    h(Select, {
+                      value: SLAVE_FALLBACK_VALUES.includes(String(config.slaveTeamFallback)) ? config.slaveTeamFallback : 'inherit',
+                      disabled,
+                      options: [
+                        { value: 'inherit', label: t('slaveFallbackInherit') },
+                        { value: 'fail', label: t('slaveFallbackFail') },
+                      ],
+                      onChange: value => update(['slaveTeamFallback'], value),
+                    }),
+                  ),
+                  h(
+                    Field,
+                    { label: t('slaveProvider'), hint: t('slaveProviderHint') },
+                    h(TextInput, {
+                      value: config.slaveTeamProvider,
+                      disabled,
+                      placeholder: 'spawn',
+                      onChange: value => update(['slaveTeamProvider'], value),
+                    }),
+                  ),
+                  h(
+                    Field,
+                    { label: t('slaveMaxDepth'), hint: t('slaveMaxDepthHint') },
+                    h(NumberInput, {
+                      value: config.slaveTeamMaxDepth,
+                      disabled,
+                      min: 1,
+                      max: 5,
+                      onChange: value => update(['slaveTeamMaxDepth'], value),
+                    }),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'ld_actions', style: { marginTop: '8px' } },
+                  h(Checkbox, {
+                    checked: config.slaveTeamPromptHelp !== false,
+                    disabled,
+                    label: t('slavePromptHelp'),
+                    onChange: value => update(['slaveTeamPromptHelp'], value),
+                  }),
+                ),
+                h(
+                  'details',
+                  { className: 'ld_fold', style: { marginTop: '10px' } },
+                  h('summary', null, t('slaveNodes') + ' · ' + String(nodes.length) + (autoMode ? ' · ' + t('slaveNodesOptional') : '')),
+                  h('div', { className: 'ld_small' }, t('slaveNodesHint')),
+                  h(
+                    'div',
+                    { className: 'ld_nodes' },
+                    nodeRows,
+                    h(
+                      'div',
+                      { className: 'ld_actions' },
+                      h('button', { type: 'button', className: 'ld_btn', disabled, onClick: () => void onAddNode() }, t('slaveAddNode')),
+                      h('button', { type: 'button', className: 'ld_btn', disabled, onClick: () => void onFillLocalNode() }, t('slaveFillLocal')),
+                      h('button', { type: 'button', className: 'ld_btn', disabled: disabled || nodes.length === 0, onClick: cleanSlaveNodes }, t('slaveCleanNodes')),
+                      nodes.length > MAX_SLAVE_NODES ? h('span', { className: 'ld_small' }, t('slaveNodeLimit')) : null,
+                    ),
+                  ),
+                  h('datalist', { id: 'ld-slave-providers' }, providerIds.map(id => h('option', { key: id, value: id }))),
+                ),
+                h('div', { className: 'ld_small' }, t('slaveCompatNote')),
+                h('div', { className: 'ld_small' }, t('slaveToolsNote')),
               ),
-            )
-          : null,
-        enabled && nodes.length === 0 ? h('div', { className: 'ld_msg warn' }, format(t('slaveImplicitNode'), { node: implicitNode })) : null,
-        h(
-          'div',
-          { className: 'ld_kv' },
-          h('span', null, h('strong', null, t('slaveNodes')), ' · ' + String(nodes.length)),
-        ),
-        h('div', { className: 'ld_small' }, t('slaveNodesHint')),
-        h(
-          'div',
-          { className: 'ld_nodes' },
-          nodeRows,
-          h(
-            'div',
-            { className: 'ld_actions' },
-            h('button', { type: 'button', className: 'ld_btn', disabled, onClick: () => void onAddNode() }, t('slaveAddNode')),
-            h('button', { type: 'button', className: 'ld_btn', disabled, onClick: () => void onFillLocalNode() }, t('slaveFillLocal')),
-            nodes.length > MAX_SLAVE_NODES ? h('span', { className: 'ld_small' }, t('slaveNodeLimit')) : null,
-          ),
-        ),
-        h('datalist', { id: 'ld-slave-providers' }, providerIds.map(id => h('option', { key: id, value: id }))),
-        h(
-          'div',
-          { className: 'ld_row' },
-          h(
-            Field,
-            { label: t('slaveDefaultNode') },
-            h(Select, {
-              value: defaultNode,
-              disabled,
-              options: defaultNodeOptions,
-              onChange: value => update(['slaveTeamDefaultNode'], value),
-            }),
-          ),
-          h(
-            Field,
-            { label: t('slaveMaxSlaves'), hint: t('slaveMaxSlavesHint') },
-            h(NumberInput, {
-              value: config.slaveTeamMaxSlaves,
-              disabled,
-              min: 1,
-              max: MAX_SLAVES,
-              onChange: value => update(['slaveTeamMaxSlaves'], value),
-            }),
-          ),
-          h(
-            Field,
-            { label: t('slavePreset') },
-            h(TextInput, {
-              value: config.slaveTeamPreset,
-              disabled,
-              placeholder: 'standard',
-              onChange: value => update(['slaveTeamPreset'], value),
-            }),
-          ),
-        ),
-        h(
-          'div',
-          { className: 'ld_row' },
-          h(
-            Field,
-            { label: t('slaveFallback') },
-            h(Select, {
-              value: SLAVE_FALLBACK_VALUES.includes(String(config.slaveTeamFallback)) ? config.slaveTeamFallback : 'inherit',
-              disabled,
-              options: [
-                { value: 'inherit', label: t('slaveFallbackInherit') },
-                { value: 'fail', label: t('slaveFallbackFail') },
-              ],
-              onChange: value => update(['slaveTeamFallback'], value),
-            }),
-          ),
-          h(
-            'div',
-            { className: 'ld_field' },
-            h('label', null, t('slavePromptHelp')),
-            h(Checkbox, {
-              checked: config.slaveTeamPromptHelp !== false,
-              disabled,
-              label: t('slavePromptHelp'),
-              onChange: value => update(['slaveTeamPromptHelp'], value),
-            }),
-          ),
-          h(
-            Field,
-            { label: t('slaveProvider'), hint: t('slaveProviderHint') },
-            h(TextInput, {
-              value: config.slaveTeamProvider,
-              disabled,
-              placeholder: 'spawn',
-              onChange: value => update(['slaveTeamProvider'], value),
-            }),
-          ),
-        ),
-        h(
-          'details',
-          { className: 'ld_fold' },
-          h('summary', null, t('slaveAdvanced')),
-          h(
-            'div',
-            { className: 'ld_row', style: { marginTop: '10px' } },
-            h(
-              Field,
-              { label: t('slaveMaxDepth'), hint: t('slaveMaxDepthHint') },
-              h(NumberInput, {
-                value: config.slaveTeamMaxDepth,
-                disabled,
-                min: 1,
-                max: 5,
-                onChange: value => update(['slaveTeamMaxDepth'], value),
-              }),
             ),
-          ),
-          h('div', { className: 'ld_small', style: { marginTop: '8px' } }, t('slaveNodeLimit')),
-        ),
-        h('div', { className: 'ld_small' }, t('slaveCompatNote')),
-        h('div', { className: 'ld_small' }, t('slaveToolsNote')),
       )
     }
+
 
     function StatsCard({ t, stats, onRefresh }) {
       const workerCounts = {
@@ -2624,7 +3202,14 @@ window.__ModuleLoader__.load({
       ComposerLevelPicker,
       buildOps,
       buildPiProvider,
+      buildChainUnrouteOps,
+      chainRouteIds,
+      validateEndpointNumbers,
       buildSlaveNode,
+      groupChainEndpoints,
+      chainRouteProviderId,
+      buildChainRouteOps,
+      missingChainModels,
       levelSelectOptions,
       findWorkspaceLevel,
       withWorkspaceLevel,

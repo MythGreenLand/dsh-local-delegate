@@ -11,10 +11,15 @@
 
 0.4.1 新增：**输入框快捷等级选择器** —— 在文本对话框工具栏（模型 / 推理等级附近）显示紧凑的「本地 AI 介入程度」选择器，并提供一个开关控制是否显示（默认显示）。
 
-- 当前版本：**0.4.1**
+0.5.0 新增：**SlaveAgentTeams 单开关自动模式** —— 不再需要手工维护节点列表：打开开关后 root/Team Lead 在 spawn 时自动发现所有已挂载的 LLM 路由/模型（本地优先），单个节点启动失败会自动换下一个节点；保存配置时还会把端点链（主端点 + 备用端点）按 host 分组自动注册为 `llm-pi-ai` 路由。显式 `slaveNodes` 仍可作为手动覆盖。
+
+0.5.1 修复：等级 `none` 不再误报“slave 工具已安装”；端点数值（timeout/maxOutputTokens/numCtx/temperature）在 GUI 与 Host 双重校验；`Remove route` 同时清理 `local-delegate-fbN`；自动注册保留用户自定义的 provider 名称/模型/headers；`slave_team_send` 的后续回合会更新 status/wait；`slaveTeamAutoDiscover:false` 时 `/slaves` 返回 implicit 模式；输入框等级卡不再重复标签。
+
+- 当前版本：**0.5.1**
 - 协议：Ollama 原生 `/api/chat`（可关思考、保活、控上下文）或任意 OpenAI 兼容端点
 - 配置：**DSH GUI 可视化配置**（Plugins → 行 Configure，或 Settings → 本地模型），也继续支持 profile `cordis.patch.yml` 覆盖
 - 安装与验证：**一键部署**（把你的智能体指向本仓库即可）见 [DEPLOY.md](DEPLOY.md)；手动/升级/回滚见 [INSTALL.md](INSTALL.md)
+- 本版更新：[docs/release-0.5.1.md](docs/release-0.5.1.md)
 
 ## 一键部署（交给你的智能体）
 
@@ -37,25 +42,24 @@ Windows 也可以先跑 `pwsh -NoProfile -File scripts\install-from-github.ps1 -
 1. **Plugins → Installed plugins → dsh-local-delegate → 行 Configure**（原生位置）；
 2. **Settings → 本地模型**（侧边导航新增分区）。
 
-页面卡片顺序：状态 → 端点 → 备用端点 → 委派限制 → Subagent 路由 → **本地 AI 介入程度** → **SlaveAgentTeams（多从节点并行）** → 节省统计 → 保存栏。
+页面卡片顺序：状态 → 端点 → 备用端点 → 高级限制（折叠）→ Subagent 路由 → **本地 AI 介入程度** → **SlaveAgentTeams（多从节点并行）** → 节省统计 → 保存栏。
 
-页面能力：
+页面刻意只保留高频项；下面的「高级」内容默认折叠，或只写在 YAML 里：
 
-- 协议（Ollama 原生 / OpenAI 兼容）、服务器地址、模型（可拉取列表后下拉选择）、API Key / API Key 环境变量；
-- 高级：`path`、`timeoutMs`、`temperature`、`maxOutputTokens`、`think`、`reasoningEffort`、`numCtx`、`keepAlive`、额外 headers（JSON）；
-- 备用端点（fallbackEndpoints）增删改；
-- 委派限制：`retries`、分块、并发、批量/内联上限、每分钟调用数等；
+- 端点：协议（Ollama 原生 / OpenAI 兼容）、服务器地址、模型（可拉取列表后下拉选择）、API Key；高级折叠里有 `path`、`timeoutMs`、`temperature`、`maxOutputTokens`、`think`、`reasoningEffort`、`numCtx`、`keepAlive`、`apiKeyEnv`、额外 headers（JSON）；
+- 备用端点：kind / baseURL / model 增删改（卡片默认折叠，标题显示数量）；`fallbackEndpoints[].timeoutMs` 等细节请在 YAML 配置（新增项默认 240000ms）；
+- 高级限制（折叠）：`retries`、分块、并发、批量/内联上限、每分钟调用数、`promptHelp`、`warmupOnStart`、`probeAllowPublic`；`allowOutsideCwd` / `allowRoots` / `denyGlobs` 只在 YAML；
 - **测试连接**（用表单里未保存的值探测，只允许回环/内网目标；公网需显式打开 `probeAllowPublic`）；
 - **节省统计**：委派调用数、失败数、本地处理字符、本地 token、估算节省的主模型 token；0.4.0 起还展示 `local_worker` 与 slave 的启动/失败/完成计数及按节点统计（内存计数，插件重载清零）；
-- **作为 Subagent / 模型选择器路由**：把当前端点注册为 `llm-pi-ai` 的 provider `local-delegate`，并写入 `subagent-model-selection-settings` 的 `allowedModels`。Subagent 策略在新建会话时采样，启用后请新开会话。
-- **本地 AI 介入程度**：默认等级 + 工作区列表（来自 `GET /api/local-delegate/levels`）+ 高级项；「更高/最高」在缺少 `local-delegate` 路由时给出醒目警告；
-- **SlaveAgentTeams**：开关、从节点列表编辑器（本地/云端、provider/model datalist、备注、增删、「用本地端点填充一个本地节点」）、默认节点、最大 slave 数、preset、失败回退、提示词开关。
+- **作为 Subagent / 模型选择器路由**：这是一个操作按钮，不是即时开关。点击后把当前端点注册为 `llm-pi-ai` 的 provider `local-delegate`，并写入 `subagent-model-selection-settings` 的 `allowedModels`；结果直接显示在按钮下方。Subagent 策略在新建会话时采样，启用后请新开会话。SlaveAgentTeams 的端点链路由同步也会自动注册同样的 provider，所以多数用户不需要手动点它。「移除路由」会同时清理 `local-delegate` 与自动注册的 `local-delegate-fbN`。
+- **本地 AI 介入程度**：默认等级 + 工作区列表（来自 `GET /api/local-delegate/levels`，列表默认折叠并显示数量）+ 高级项；「更高/最高」在缺少 `local-delegate` 路由时给出醒目警告；
+- **SlaveAgentTeams**：默认只显示开关、可用节点勾选列表、刷新检测/端点链路由注册；默认节点、最大 slave 数、preset、失败回退、提示词开关、provider、maxDepth 和手写 `slaveNodes` 编辑器都收进「高级」折叠区。可用节点默认只显示端点链路由，其他挂载路由折叠说明。
 - **输入框快捷等级选择器（0.4.1）**：在「本地 AI 介入程度」卡片里用「在输入框显示等级选择器」（`composerLevelPicker`）开关是否在文本对话框工具栏显示选择器。
 
 保存行为：
 
 - 保存写入 profile 的 `cordis.patch.yml` 中 `- id: local-delegate` 覆盖行，**数秒内热生效**，无需重启；
-- 首次保存会生成**完整覆盖行**（未在 GUI 暴露的普通字段会按当前 raw 值钉住）；删除该行即回到 bundle 默认值；
+- 首次保存只写入**发生变化的字段**；未改动字段继续继承 bundle/profile 前层默认值。删除该行即回到 bundle 默认值；需要固定全部字段时请手工编辑 YAML；
 - `apiKey` 会以明文写进 profile patch；更推荐用 `apiKeyEnv`（环境变量/DSH 凭据引用名）；
 - `allowOutsideCwd` / `allowRoots` / `denyGlobs` 等安全策略**有意保留 YAML**，页面只读展示生效值；
 - `workspaceLevels`、`slaveNodes`、`plannerDenyExtra`、`plannerAllowExtra` 等对象/数组字段**整值覆盖保存**（删除工作区覆盖 = 在 GUI 里选「跟随默认」；删除节点 = 点节点行「删除节点」）。
@@ -121,17 +125,39 @@ Windows 也可以先跑 `pwsh -NoProfile -File scripts\install-from-github.ps1 -
 
 ## SlaveAgentTeams（多从节点并行，0.4.0 新增）
 
-打开 `slaveTeamsEnabled` 后，**root / Team Lead agent** 会获得一组「从节点团队」工具：一次调用并行启动多个 slave 子 agent（每个都是独立的 continuable child session），每个 slave 跑在 `slaveNodes` 里指定的节点上（本地廉价模型或云端模型路由），由 master 等待/汇总结果。child agent 与 teammate **永远不装**这些工具（防止递归与权限扩散）。
+打开 `slaveTeamsEnabled` 后，**root / Team Lead agent** 会获得一组「从节点团队」工具：一次调用并行启动多个 slave 子 agent（每个都是独立的 continuable child session），由 master 等待/汇总结果。child agent 与 teammate **永远不装**这些工具（防止递归与权限扩散）。
 
-### 从节点池
+### 单开关自动模式（0.5.0，推荐）
+
+只需要打开 `slaveTeamsEnabled`：
+
+- **自动发现**：spawn 时通过 `ctx.get('llm').listProviders()` / `listModels()` 枚举所有已挂载的 LLM 路由与模型（只读元数据，不生成 token），生成 `<provider>/<model>` 节点；轮询优先只在本地/内网节点之间进行，云端节点作为故障转移候选，只有显式指定 `node` / `default_node` 时才直接使用。
+- **端点链自动接入**：保存配置时，插件把 `endpoint` + `fallbackEndpoints` 按 `(kind, baseURL, headers/key)` 分组，自动写入 `llm-pi-ai` 路由（`local-delegate`、`local-delegate-fb1`…，同一 host 的多个模型共享一条路由）。这样主端点和备用端点都能被 slave 使用；健康探测报告缺失（`modelFound=false`）的模型会被跳过，避免注册必然失败的节点。已存在的同名路由会保留用户自定义的 `displayName`、模型顺序/元数据、额外 headers 和本插件不管理的字段，只更新 `api`/`baseURL`/默认上下文与 token 上限。
+- **节点级故障转移**：某个节点路由预检/启动失败时，同一任务自动尝试下一个节点；只有最后一个节点仍失败时才按 `slaveTeamFallback` 决定是否回退到父模型（`inherit`）或报错（`fail`）。
+- **等级联动**：等级 `none` 过滤本地节点；显式 cloud 节点仍可用。自动发现模式下 L0 不安装 slave 工具（没有本地节点，且无法在安装时同步确认 cloud 候选），需要 L0 云端 slave 时请显式配置 `slaveNodes` 的 cloud 节点。
+- **勾选可用节点**：SlaveAgentTeams 卡片的「可用节点」列表默认只显示端点链路由（`local-delegate` 与 `local-delegate-fbN`）；其他已挂载路由会以一行说明隐藏，需要时可到高级节点编辑器手动添加。勾选后保存即写入 `slaveNodes`，不需要手填 provider/model。未勾选任何节点时，打开自动模式会使用全部检测节点。
+- **清理节点**：高级节点编辑器提供「清理无效/重复节点」，会删除模型不被路由声明、空 provider/model 以及重复的 provider/model；同一模型通过不同 provider 暴露仍视为不同节点。
+- **手动覆盖**：`slaveNodes` 非空时完全按勾选/手动池使用（不再自动使用全部检测节点）；节点编辑器保留在卡片里，作为高级覆盖。
+
+相关配置：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `slaveTeamsEnabled` | `false` | 唯一开关；打开即启用自动检测与 5 个 `slave_team_*` 工具。 |
+| `slaveTeamAutoDiscover` | `true` | 自动发现；显式 `slaveNodes` 非空时自动失效。 |
+| `slaveTeamFallback` | `inherit` | 所有候选节点都失败后：`inherit` 用父模型重试，`fail` 直接报错。 |
+
+GUI 的 SlaveAgentTeams 卡片会显示「自动模式」、检测到的路由/节点数、刷新检测与「立即注册端点链路由」按钮。端点链路由的自动注册发生在 **GUI 保存**（或点「立即注册端点链路由」）时；只手工改 `cordis.patch.yml` 的话，请先在 GUI 保存一次或手动注册 `llm-pi-ai` 路由。
+
+### 从节点池（手动覆盖）
 
 每个节点是一个 `{ name, kind, provider, model, note }`：
 
 - `provider` / `model` 是 **LLM 路由**，必须能被 `ctx.get('llm').resolveCallConfig({ provider, model })` 解析，例如：
-  - 本地：`local-delegate` / `gemma4:e2b`（由 v0.3 的「启用为 Subagent 模型」创建）；
+  - 本地：`local-delegate` / `gemma4:e2b`（由「启用为 Subagent 模型」创建，或由 0.5 的端点链自动注册）；
   - 云端：`deepseek-account` / `deepseek-flash`、`intranet-gemma` / `gemma4:e2b` 等你已在 Models / llm 插件注册的路由。
 - `kind: 'local' | 'cloud'` 只影响等级联动：等级 `none` 时**过滤掉所有 local 节点**；过滤后没有可用节点则不安装 slave 工具。
-- `model` 留空 = 用 `endpoint.model`；隐式节点（`slaveNodes` 为空时）是 `local-delegate/<workerRouteModel 或 endpoint.model>`，model 为空则节点无效。
+- `model` 留空 = 用 `endpoint.model`；`slaveNodes` 为空且 `slaveTeamAutoDiscover: false` 时，隐式节点是 `local-delegate/<workerRouteModel 或 endpoint.model>`，model 为空则节点无效。
 - 名字须唯一（重名保留第一个），节点顺序稳定；最多使用前 12 个。
 - `slaveTeamDefaultNode` 指定默认节点；空 = **轮询**（round-robin）。单次 spawn 也可用 `default_node` / 每个任务的 `node` 覆盖。
 - **深度**：`slaveTeamMaxDepth`（默认 1）沿用 tool-subagent 的 `maxDepth` 语义（当前按「子 agent 的派生深度」处理）；默认值下 slave 不会再派生 slave。若后续 DSH 版本语义变化，以实测为准。
@@ -143,7 +169,7 @@ Windows 也可以先跑 `pwsh -NoProfile -File scripts\install-from-github.ps1 -
 | `slave_team_spawn` | `tasks: [{ name?, task, node? }]`（1..`slaveTeamMaxSlaves`）、`default_node?`、`preset?`、`max_depth?` | 快速依次启动 N 个 slave 子 agent（启动后立即并行运行），返回 `started: [{ name, child_id, node, provider, model, kind }]` 与 `failed: [{ name, node, error }]`；部分失败不中断其余任务。 |
 | `slave_team_status` | `name?` | 查看该 master 已启动 slave 的状态（`running` / `settled` / `failed`）、stop_reason、耗时与 ≤800 字符输出预览。 |
 | `slave_team_wait` | `names?`、`timeout_ms?`、`mode?: 'all'\|'any'` | 等待 slave 结果（默认 all、600s、clamp 1s..30min）；返回 settled/pending、`timed_out` 与有界输出预览；超时不是错误，可再次调用。 |
-| `slave_team_send` | `name`、`message` | 给运行中的 slave 发消息（Team 模式下 `send_message` 被 team 工具 shadow，用这个 steer slave）。 |
+| `slave_team_send` | `name`、`message` | 给运行中的 slave 发消息（Team 模式下 `send_message` 被 team 工具 shadow，用这个 steer slave）。后续回合会被 `slave_team_wait` 等待，并在 `subagent/end` 到达后更新 status 输出与 stop_reason。 |
 | `slave_team_interrupt` | `name` | 中断一个 slave（fire-and-return；其 result 仍会 settle，通常 stop_reason 为 aborted）。 |
 
 使用方式：主 agent 只需自然规划，例如「同时把这三个独立文件各自加注释」→ Agent 调用 `slave_team_spawn`（3 个 task，节点自动选择）→ `slave_team_wait` 汇总。安装 slave 工具时还会注入 scoped 提示词（可用 `slaveTeamPromptHelp: false` 关闭）与动态状态行，帮助模型正确使用。
@@ -154,7 +180,7 @@ Windows 也可以先跑 `pwsh -NoProfile -File scripts\install-from-github.ps1 -
 - Team Lead 同时拿到 team 工具与 slave 工具：teammate 用 team 工具，slave 用 slave 工具；两类 roster 互不干扰（slave 不出现在 team 名单，teammate 不出现在 slave 名单）；
 - slave 是**子 agent（child session）**：会出现在原生 `list_agents` 的 children 里（若该工具存在），但**不是** team teammate，不会被 `wait_agent` 等待；非 Team 模式下原生 `send_message(child_id)` 也能 steer slave；
 - teammate 仍用强模型；本功能不把 teammate 切到本地模型；
-- 若 profile 未启用 Agent Teams，本功能单独正常工作；`slaveTeamFallback: inherit`（默认）在节点路由失败时去掉 `agentOptions` 用父模型重试一次（成本上升），`fail` 直接给可操作错误（`SLAVE_ROUTE_UNAVAILABLE`）；
+- 若 profile 未启用 Agent Teams，本功能单独正常工作；0.5.0 起节点失败先在同一任务内切换到下一个候选节点，**所有候选都失败**后才按 `slaveTeamFallback` 决定：`inherit` 去掉 `agentOptions` 用父模型重试一次（成本上升），`fail` 直接给可操作错误（`SLAVE_ROUTE_UNAVAILABLE`）；
 - 容量：DSH 每个 activation 树默认 `maxActiveSubagents=8`；`slaveTeamMaxSlaves` 默认 4、clamp 1..8，spawn 超限会返回可操作错误（`slaveTeamMaxSlaves` / `ACTIVATION_LIMIT_REACHED`）。
 
 ## 工具（Host 全局）
@@ -162,7 +188,7 @@ Windows 也可以先跑 `pwsh -NoProfile -File scripts\install-from-github.ps1 -
 | 工具 | 用途 |
 |---|---|
 | `local_transform` | 单次变换。**优先 `path` 文件模式**：插件读取文件并写回，正文不进对话；`text` 只用于短片段（≤ `maxInlineChars`） |
-| `local_batch` | 多文件批量。默认 **dry-run**（只返回计划），`dry_run: false` 才执行；输出到 `out_dir`（默认 `.local-out/`） |
+| `local_batch` | 多文件批量。默认 **dry-run**（只返回计划），`dry_run: false` 才执行；输出到 `out_dir`（默认 `.local-out/`）；同一批内同名文件自动追加 `-2`、`-3` 后缀，避免互相覆盖 |
 | `local_health` | 探测整条端点链 + 返回配置与修复建议，不生成 token；状态行包含插件版本 |
 
 0.4.0 起，`high` / `max` 等级的 root agent 还会在 scoped scope 内看到 `local_worker`（把整块任务交给本地 worker 子 agent）；打开 SlaveAgentTeams 时 root/Team Lead 额外看到 5 个 `slave_team_*` 工具。它们**不是全局工具**，只挂在对应用户的 agent scope 上，插件卸载/agent 销毁时自动清理。
@@ -247,10 +273,11 @@ Windows 也可以先跑 `pwsh -NoProfile -File scripts\install-from-github.ps1 -
     applyToLiveAgents: false         # 设置变化时立即重装运行中的 agent
     composerLevelPicker: true        # 0.4.1：在输入框工具栏显示等级选择器（false = 隐藏）
 
-    # ── SlaveAgentTeams（0.4.0） ──────────────────────────────
+    # ── SlaveAgentTeams（0.5.0：单开关自动模式） ───────────────
     slaveTeamsEnabled: false
-    slaveNodes: []                   # 节点池；空 = 隐式本地节点（依赖 endpoint.model）
-    # 例：
+    slaveTeamAutoDiscover: true      # 自动发现所有已挂载 LLM 路由/模型（本地优先）
+    slaveNodes: []                   # 手动覆盖；空 = 自动模式
+    # 例（手动覆盖时）：
     # slaveNodes:
     #   - name: local
     #     kind: local
@@ -266,7 +293,7 @@ Windows 也可以先跑 `pwsh -NoProfile -File scripts\install-from-github.ps1 -
     slaveTeamPreset: standard
     slaveTeamMaxSlaves: 4            # 1–8（单次 spawn 最多 slave 数）
     slaveTeamMaxDepth: 1             # 1–5；默认 slave 不能再派生 slave
-    slaveTeamFallback: inherit       # inherit | fail（节点路由失败时）
+    slaveTeamFallback: inherit       # inherit | fail（所有候选节点都失败时）
     slaveTeamPromptHelp: true        # 注入 SlaveAgentTeams 使用指引
 ```
 
@@ -317,7 +344,7 @@ Windows 也可以先跑 `pwsh -NoProfile -File scripts\install-from-github.ps1 -
 - **teammate 仍使用 Team 继承的强模型**：DSH rc.5 的 Team spawn 不传 model，本插件不改变这一点；需要本地 teammate 需上游支持或 Phase C 的 provider 包装（本版未做）。
 - **等级默认对新会话生效**：`applyToLiveAgents` 打开后才会重装运行中的 agent，且可能导致 prompt 缓存失效。
 - **scoped API 属于 DSH 0.2.1-rc.5 契约**：`agent/created`、`tools.restrict`、systemPrompt scoped、`startActivation`、`agentOptions` 等均来自 rc.5；DSH 升级需回归。
-- **GUI 保存会生成完整覆盖行**（v0.3 已知限制），未暴露的普通字段按当前 raw 值钉住。
+- **GUI 保存只写变化字段**（v0.3 已知限制）：未改动字段继续继承默认值；需要固定全部字段时手工编辑 YAML。
 - **输入框选择器（0.4.1）依赖 Web GUI 的 `conversation.input.left` 插槽与 Workspace 快照**：老版本 Host 或非 Web 部署下不会显示；会话未归属工作区时按钮改为编辑全局默认等级（菜单内会提示），不影响设置页的按工作区配置。
 - 统计是内存态（重载清零），不做持久化账本。
 - 批量是同步执行，靠 `maxBatchChars/maxBatchFiles` 控制单次时长；超长任务请拆批。

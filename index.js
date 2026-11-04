@@ -23,6 +23,8 @@ import {
   resolveFrom,
   isInside,
   matchesDeniedPath,
+  canonicalExistingPath,
+  canonicalWritePath,
   findSecret,
   defaultOutputPath,
   atomicWrite,
@@ -48,7 +50,7 @@ export const name = 'local-delegate'
 export const inject = ['tools']
 
 /** Reported by local_health, /localdoctor, the startup log line, and the GUI. */
-const PLUGIN_VERSION = '0.4.1'
+const PLUGIN_VERSION = '0.5.1'
 
 const TASKS = ['translate', 'summarize', 'extract', 'classify', 'rewrite', 'commit_message', 'names']
 
@@ -224,27 +226,36 @@ async function callWithFallback(runtime, request) {
 /** Probe the primary endpoint and every fallback; derive the effective status. */
 async function refreshHealth(runtime) {
   const config = runtime.config
-  const results = []
-  for (const endpoint of endpointChain(config)) {
-    const model = String(endpoint.model || config.endpoint.model || '')
-    let probe
-    try {
-      probe = await probeEndpoint({ endpoint: withResolvedKey(endpoint), model })
-    } catch (error) {
-      probe = { ok: false, latencyMs: 0, modelFound: false, models: [], error: String(error?.message ?? error) }
-    }
-    results.push({ endpoint, model, probe })
-  }
+  // Probe concurrently: each probe is bounded to 10s, so many fallbacks cannot
+  // push local_health past its own tool timeout.
+  const results = await Promise.all(
+    endpointChain(config).map(async (endpoint) => {
+      const model = String(endpoint.model || config.endpoint.model || '')
+      let probe
+      try {
+        probe = await probeEndpoint({ endpoint: withResolvedKey(endpoint), model })
+      } catch (error) {
+        probe = { ok: false, latencyMs: 0, modelFound: false, models: [], error: String(error?.message ?? error) }
+      }
+      return { endpoint, model, probe }
+    }),
+  )
   const primary = results[0]
-  const primaryOk = primary?.probe?.ok === true
-  const fallbackOk = results.slice(1).find((entry) => entry.probe.ok) ?? null
+  // A reachable server with a missing model is not usable: every request would
+  // fail with 404, so it must not count as an available endpoint or fallback.
+  const primaryOk = primary?.probe?.ok === true && primary?.probe?.modelFound === true
+  const fallbackOk = results.slice(1).find((entry) => entry.probe?.ok === true && entry.probe?.modelFound === true) ?? null
+  const primaryError =
+    primary?.probe?.ok === true && primary?.probe?.modelFound !== true && primary?.model
+      ? `model "${primary.model}" is not advertised by ${primary.endpoint.baseURL}`
+      : (primary?.probe?.error ?? null)
   runtime.health = {
     status: primaryOk ? 'available' : fallbackOk ? 'degraded' : 'unavailable',
     checkedAt: Date.now(),
     primary: primary ?? null,
     fallbacks: results.slice(1),
     effective: primaryOk ? primary : fallbackOk,
-    error: primary?.probe?.error ?? null,
+    error: primaryError,
   }
   return runtime.health
 }
@@ -265,10 +276,11 @@ async function sessionCwd(ctx, exec) {
 }
 
 function allowedRoots(config, cwd) {
-  const roots = [cwd]
+  const roots = [canonicalExistingPath(cwd)]
   for (const entry of config.allowRoots) {
     if (!entry) continue
-    roots.push(nodePath.isAbsolute(entry) ? nodePath.normalize(entry) : nodePath.resolve(cwd, entry))
+    const absolute = nodePath.isAbsolute(entry) ? nodePath.normalize(entry) : nodePath.resolve(cwd, entry)
+    roots.push(canonicalExistingPath(absolute))
   }
   return roots
 }
@@ -280,8 +292,33 @@ function displayPath(cwd, absolute) {
   return relative.split(nodePath.sep).join('/')
 }
 
-function resolveCheckedPath(config, cwd, target, label) {
-  const absolute = resolveFrom(cwd, target)
+/** Make a batch output path unique within one run (same basename in two folders). */
+function uniqueOutputPath(candidate, used) {
+  const keyOf = (value) => (process.platform === 'win32' ? value.toLowerCase() : value)
+  let next = candidate
+  if (!used.has(keyOf(next))) {
+    used.add(keyOf(next))
+    return next
+  }
+  const parsed = nodePath.parse(candidate)
+  for (let index = 2; index < 10_000; index += 1) {
+    next = nodePath.join(parsed.dir, `${parsed.name}-${index}${parsed.ext}`)
+    if (!used.has(keyOf(next))) {
+      used.add(keyOf(next))
+      return next
+    }
+  }
+  throw new Error(`LOCAL_OUTPUT_COLLISION: could not create a unique output path for "${candidate}"`)
+}
+
+/**
+ * Resolve and validate one path. Reads resolve the final target through
+ * symlinks; writes resolve the existing parent chain, so a symlinked output
+ * directory cannot redirect a write outside the allowed roots.
+ */
+function resolveCheckedPath(config, cwd, target, label, { forWrite = false } = {}) {
+  const requested = resolveFrom(cwd, target)
+  const absolute = forWrite ? canonicalWritePath(requested) : canonicalExistingPath(requested)
   const roots = allowedRoots(config, cwd)
   const inside = config.allowOutsideCwd || roots.some((root) => isInside(root, absolute))
   if (!inside) {
@@ -291,7 +328,11 @@ function resolveCheckedPath(config, cwd, target, label) {
         `in the local-delegate config. Allowed roots: ${roots.join(', ')}`,
     )
   }
-  if (matchesDeniedPath(cwd, absolute, config.denyGlobs)) {
+  const canonicalCwd = canonicalExistingPath(cwd)
+  if (
+    matchesDeniedPath(canonicalCwd, absolute, config.denyGlobs) ||
+    matchesDeniedPath(canonicalCwd, requested, config.denyGlobs)
+  ) {
     throw new Error(`LOCAL_PATH_DENIED: ${label} "${target}" matches a denied path pattern (${config.denyGlobs.join(', ')})`)
   }
   return absolute
@@ -342,9 +383,13 @@ async function transformText(runtime, task, text, options, signal) {
     })
   })
 
-  const promptTokens = outputs.reduce((sum, entry) => sum + (entry.promptTokens || 0), 0)
-  const completionTokens = outputs.reduce((sum, entry) => sum + (entry.completionTokens || 0), 0)
+  let promptTokens = outputs.reduce((sum, entry) => sum + (entry.promptTokens || 0), 0)
+  let completionTokens = outputs.reduce((sum, entry) => sum + (entry.completionTokens || 0), 0)
   const last = outputs[outputs.length - 1]
+  let model = last.model
+  let endpoint = last.endpointLabel
+  let fallback = outputs.some((entry) => entry.fallback)
+  let chunkCalls = chunks.length
   let assembled = joinChunks(outputs.map((entry) => entry.text))
 
   // A multi-chunk summary is a reduce, not a concatenation.
@@ -357,18 +402,24 @@ async function transformText(runtime, task, text, options, signal) {
       signal,
     })
     assembled = reduce.text
-    last.endpointLabel = reduce.endpointLabel
-    last.fallback = last.fallback || reduce.fallback
+    // The reduce is a real model request: count its tokens and request, and
+    // report the endpoint/model that produced the final text.
+    promptTokens += reduce.promptTokens || 0
+    completionTokens += reduce.completionTokens || 0
+    chunkCalls += 1
+    model = reduce.model
+    endpoint = reduce.endpointLabel
+    fallback = fallback || reduce.fallback
   }
 
   return {
     text: assembled,
-    chunks: chunks.length,
+    chunks: chunkCalls,
     promptTokens,
     completionTokens,
-    model: last.model,
-    endpoint: last.endpointLabel,
-    fallback: outputs.some((entry) => entry.fallback) || last.fallback,
+    model,
+    endpoint,
+    fallback,
   }
 }
 
@@ -437,9 +488,13 @@ export async function executeTransform(runtime, ctx, exec, args) {
           'Handle this file yourself or redact it first.',
       )
     }
-    const outputPath = args.out_path
-      ? resolveCheckedPath(config, cwd, args.out_path, 'out_path')
-      : resolveCheckedPath(config, cwd, nodePath.relative(cwd, defaultOutputPath(sourcePath)), 'out_path')
+    const outputPath = resolveCheckedPath(
+      config,
+      cwd,
+      args.out_path ? args.out_path : defaultOutputPath(sourcePath),
+      'out_path',
+      { forWrite: true },
+    )
     const result = await transformText(runtime, task, text, options, exec.signal)
     if (!result.text.trim()) throw new Error('LOCAL_EMPTY_OUTPUT: the local model returned empty output; do the work yourself')
     await atomicWrite(outputPath, result.text)
@@ -561,9 +616,7 @@ export async function executeBatch(runtime, ctx, exec, args) {
       `LOCAL_BATCH_TOO_LARGE: ${formatBytes(totalChars)} total; the limit is ${formatBytes(config.maxBatchChars)}. Split the batch.`,
     )
   }
-  const outDir = args.out_dir
-    ? resolveCheckedPath(config, cwd, args.out_dir, 'out_dir')
-    : nodePath.join(cwd, '.local-out')
+  const outDir = resolveCheckedPath(config, cwd, args.out_dir || '.local-out', 'out_dir', { forWrite: true })
   const relativeOut = displayPath(cwd, outDir)
 
   if (dryRun) {
@@ -583,6 +636,7 @@ export async function executeBatch(runtime, ctx, exec, args) {
   const written = []
   const failed = []
   const endpoints = new Set()
+  const usedOutputs = new Set()
   let usedFallback = false
   let charsIn = 0
   let charsOut = 0
@@ -600,7 +654,10 @@ export async function executeBatch(runtime, ctx, exec, args) {
       if (secret) throw new Error(`contains a ${secret.name}; refused`)
       const result = await transformText(runtime, task, text, options, exec.signal)
       if (!result.text.trim()) throw new Error('empty model output')
-      const outputPath = nodePath.join(outDir, nodePath.basename(defaultOutputPath(entry.absolute)))
+      const candidate = nodePath.join(outDir, nodePath.basename(defaultOutputPath(entry.absolute)))
+      const outputPath = resolveCheckedPath(config, cwd, uniqueOutputPath(candidate, usedOutputs), 'out_path', {
+        forWrite: true,
+      })
       await atomicWrite(outputPath, result.text)
       written.push(displayPath(cwd, outputPath))
       charsIn += text.length
@@ -718,28 +775,47 @@ function remediationFor(runtime) {
   const config = runtime.config
   const health = runtime.health
   const items = []
+  const primaryProbe = health.primary?.probe
+  const primaryModelMissing =
+    primaryProbe?.ok === true && primaryProbe?.modelFound !== true && Boolean(health.primary?.model)
   if (!config.enabled) {
     items.push('The plugin is disabled (enabled=false). Set "enabled: true" on the local-delegate config row and save; it applies within seconds.')
   }
   if (!config.endpoint.model) {
     items.push('endpoint.model is empty. Set it to a model the endpoint serves, for example "gemma4:e2b", then run local_health again.')
   }
-  if (health.status === 'unavailable') {
+  if (primaryModelMissing) {
+    items.push(
+      `The primary endpoint ${config.endpoint.baseURL} is reachable but does not advertise model "${health.primary.model}". ` +
+        'Run `ollama list` on the server and fix endpoint.model (or pull the model), otherwise every request fails with HTTP 404/model-not-found.',
+    )
+  } else if (health.status === 'unavailable') {
     items.push(
       `Primary endpoint ${config.endpoint.baseURL} is unreachable. Confirm the server is running and the DSH host can reach it ` +
         '(for Ollama: OLLAMA_HOST=0.0.0.0, firewall open, then `node -e "fetch(\'http://HOST:11434/api/tags\')"`).',
     )
+  }
+  if (health.status === 'unavailable') {
     items.push('If this machine is a standby, add a reachable endpoint to fallbackEndpoints so mechanical work keeps flowing.')
   } else if (health.status === 'degraded') {
     items.push('Primary endpoint is down; work is routed to a fallback. Check the primary server when convenient.')
   }
-  if (health.primary?.probe?.ok === true && health.primary?.probe?.modelFound === false) {
-    items.push(
-      `The endpoint does not advertise model "${config.endpoint.model}". Run \`ollama list\` on the server and fix endpoint.model ` +
-        '(or pull the model), otherwise every request fails with HTTP 404/model-not-found.',
-    )
+  for (const [index, entry] of (health.fallbacks ?? []).entries()) {
+    const probe = entry?.probe
+    if (!probe) continue
+    if (probe.ok === true && probe.modelFound !== true) {
+      items.push(
+        `fallbackEndpoints[${index}] ${entry.endpoint.baseURL} is reachable but does not advertise model "${entry.model}"; ` +
+          'failover to this endpoint will fail until that model is pulled or the model id is fixed.',
+      )
+    } else if (probe.ok !== true) {
+      items.push(
+        `fallbackEndpoints[${index}] ${entry.endpoint.baseURL} is unreachable (${probe.error ?? 'probe failed'}); ` +
+          'failover to this endpoint will fail until it is restored.',
+      )
+    }
   }
-  if (config.endpoint.kind === 'openai-compatible' && health.primary?.probe?.ok !== true && /HTTP 4\d\d/.test(String(health.primary?.probe?.error))) {
+  if (config.endpoint.kind === 'openai-compatible' && primaryProbe?.ok !== true && /HTTP 4\d\d/.test(String(primaryProbe?.error))) {
     items.push('OpenAI-compatible routes usually need a placeholder key/Authorization header even for local servers (endpoint.apiKey or endpoint.headers).')
   }
   return items
@@ -837,7 +913,9 @@ function policyText(runtime, ctx, policy) {
   )
   lines.push(
     `slave teams: enabled=${config.slaveTeamsEnabled}` +
-      (config.slaveTeamsEnabled ? `, defaultNode=${config.slaveTeamDefaultNode || '(round-robin)'}, maxSlaves=${config.slaveTeamMaxSlaves}` : ''),
+      (config.slaveTeamsEnabled
+        ? `, mode=${Array.isArray(config.slaveNodes) && config.slaveNodes.length > 0 ? 'explicit' : config.slaveTeamAutoDiscover !== false ? 'auto' : 'implicit'}, defaultNode=${config.slaveTeamDefaultNode || '(round-robin)'}, maxSlaves=${config.slaveTeamMaxSlaves}`
+        : ''),
   )
   lines.push('')
   const agents = listLiveAgents(ctx)
@@ -918,6 +996,70 @@ export function apply(ctx, rawConfig) {
   refreshConfig()
   runtime.refresh = refreshConfig
 
+  const systemPrompt = ctx.get('systemPrompt')
+  let promptHelpDispose = null
+  const applyPromptHelp = () => {
+    const active = runtime.config
+    const wanted = active.enabled && active.promptHelp && systemPrompt
+    if (!wanted) {
+      if (typeof promptHelpDispose === 'function') {
+        try {
+          promptHelpDispose()
+        } catch {
+          /* removing prompt guidance must never break a live update */
+        }
+      }
+      promptHelpDispose = null
+      return
+    }
+    if (typeof promptHelpDispose === 'function') return
+    promptHelpDispose = systemPrompt.section({
+      name: 'tool:local-delegate',
+      order: 10050,
+      interpolate: false,
+      text: [
+        'A local cheap model endpoint is configured for mechanical text work (free, separate from this conversation); its current model, address, and availability appear in the runtime context below.',
+        'Delegate MECHANICAL text work whose content you do not need to understand, only its result: translate, summarize, extract fields, classify, rewrite, write commit messages, propose names.',
+        'Call `local_transform` with a file `path` (preferred) or `local_batch` with `paths`; never paste long text into the call — text written into a tool call costs output tokens, a path costs about a hundred. Delegate when the content is larger than ~800 tokens or spans whole files; for many files let `local_batch` run its default dry run first.',
+        'Do the work yourself when it needs judgement or trust: code changes and debugging, architecture or decisions, final user-facing answers, secrets or credentials or personal data, or anything you must verify line by line.',
+        'If the local model fails once or returns unusable output, stop delegating and do it yourself. `local_health` checks the endpoint chain without generating tokens.',
+      ].join(' '),
+    })
+  }
+
+  let stopWarmup = null
+  function applyWarmup() {
+    if (typeof stopWarmup === 'function') {
+      stopWarmup()
+      stopWarmup = null
+    }
+    const active = runtime.config
+    if (!active.enabled || !active.warmupOnStart) return
+    const probeAndLog = () => {
+      const current = runtime.refresh ? runtime.refresh() : runtime.config
+      refreshHealth(runtime)
+        .then((health) => {
+          if (health.status === 'available') {
+            log('info', `connected: ${current.endpoint.baseURL} model=${current.endpoint.model || '(unset)'} (${health.primary?.probe?.latencyMs ?? '?'}ms)`)
+          } else if (health.status === 'degraded') {
+            log('warn', `primary endpoint unavailable; fallback ${health.effective?.endpoint?.baseURL ?? 'unknown'} is serving`)
+          } else {
+            log('warn', `endpoint unavailable at ${current.endpoint.baseURL}: ${health.error ?? 'probe failed'} — run /localdoctor for remediation`)
+          }
+        })
+        .catch(() => {})
+    }
+    const kick = setTimeout(probeAndLog, 1500)
+    kick.unref?.()
+    const timer = setInterval(probeAndLog, 120_000)
+    timer.unref?.()
+    stopWarmup = () => {
+      clearTimeout(kick)
+      clearInterval(timer)
+      stopWarmup = null
+    }
+  }
+
   // Volatile-only edits (the GUI save path) update config references in place;
   // refresh derived state and re-probe without remounting the plugin.
   if (typeof ctx.on === 'function') {
@@ -926,6 +1068,8 @@ export function apply(ctx, rawConfig) {
       const before = endpointSummaryText(runtime.config)
       const after = endpointSummaryText(refreshConfig())
       if (before !== after) log('info', `config updated: ${after}`)
+      applyPromptHelp()
+      applyWarmup()
       clearTimeout(probeTimer)
       probeTimer = setTimeout(() => {
         void refreshHealth(runtime).catch(() => {})
@@ -935,8 +1079,15 @@ export function apply(ctx, rawConfig) {
     if (typeof ctx.effect === 'function') ctx.effect(() => () => clearTimeout(probeTimer), 'local-delegate: volatile probe timer')
   }
 
-  // Same-origin GUI API: status / probe / models. Runs in its own fiber so a
-  // composition without an HTTP server cannot take the tools down with it.
+  // v0.4: per-workspace levels policy + SlaveAgentTeams scoped tools. The
+  // Slaves service is created before the settings API so GET /slaves can reuse
+  // automatic discovery. The policy starts after the global tools above exist
+  // (L0/L4 restriction needs their names) and is cleaned up through
+  // ctx.effect on unload/HMR.
+  const slaveTeams = createSlaveTeamsService({ ctx, getConfig: refreshConfig, log, stats: runtime.stats })
+
+  // Same-origin GUI API: status / levels / slaves / probe / models. Runs in its
+  // own fiber so a composition without an HTTP server cannot take the tools down.
   if (typeof ctx.inject === 'function') {
     const getConnection = () => (typeof ctx.get === 'function' ? ctx.get('connection') : undefined)
     ctx.inject(['webServer'], (scoped) => {
@@ -949,6 +1100,8 @@ export function apply(ctx, rawConfig) {
         version: PLUGIN_VERSION,
         log,
         getWorkspaceRegistry: () => (typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : undefined),
+        discoverSlaves: () => slaveTeams.discover(),
+        refreshHealth: () => refreshHealth(runtime),
       })
       scoped.effect(
         () => server.register({ kind: 'prefix', path: '/api/local-delegate', handler }),
@@ -961,23 +1114,8 @@ export function apply(ctx, rawConfig) {
   for (const warning of configWarnings(config)) log('warn', warning)
   log('info', `ready: v${PLUGIN_VERSION} ${endpointSummaryText(config)}`)
 
-  const systemPrompt = ctx.get('systemPrompt')
-
   if (config.enabled) {
-    if (config.promptHelp && systemPrompt) {
-      systemPrompt.section({
-        name: 'tool:local-delegate',
-        order: 10050,
-        interpolate: false,
-        text: [
-          'A local cheap model endpoint is configured for mechanical text work (free, separate from this conversation); its current model, address, and availability appear in the runtime context below.',
-          'Delegate MECHANICAL text work whose content you do not need to understand, only its result: translate, summarize, extract fields, classify, rewrite, write commit messages, propose names.',
-          'Call `local_transform` with a file `path` (preferred) or `local_batch` with `paths`; never paste long text into the call — text written into a tool call costs output tokens, a path costs about a hundred. Delegate when the content is larger than ~800 tokens or spans whole files; for many files let `local_batch` run its default dry run first.',
-          'Do the work yourself when it needs judgement or trust: code changes and debugging, architecture or decisions, final user-facing answers, secrets or credentials or personal data, or anything you must verify line by line.',
-          'If the local model fails once or returns unusable output, stop delegating and do it yourself. `local_health` checks the endpoint chain without generating tokens.',
-        ].join(' '),
-      })
-    }
+    applyPromptHelp()
 
     if (systemPrompt) {
       const configRef = runtime
@@ -1106,11 +1244,8 @@ export function apply(ctx, rawConfig) {
     })
   }
 
-  // v0.4: per-workspace levels policy + SlaveAgentTeams scoped tools. The
-  // services are created here so commands can report their state; the policy
-  // starts after the global tools above exist (L0/L4 restriction needs their
-  // names) and is cleaned up through ctx.effect on unload/HMR.
-  const slaveTeams = createSlaveTeamsService({ ctx, getConfig: refreshConfig, log, stats: runtime.stats })
+  // v0.4: per-workspace levels policy. Starts after the global tools above
+  // exist so L0/L4 restriction can see their names; cleaned up via ctx.effect.
   const policy = createLevelsPolicy({
     ctx,
     getConfig: refreshConfig,
@@ -1180,33 +1315,22 @@ export function apply(ctx, rawConfig) {
     }
   }
 
-  if (config.enabled && config.warmupOnStart) {
-    const startWarmup = () => {
-      const probeAndLog = () => {
-        const active = runtime.refresh ? runtime.refresh() : runtime.config
-        refreshHealth(runtime)
-          .then((health) => {
-            if (health.status === 'available') {
-              log('info', `connected: ${active.endpoint.baseURL} model=${active.endpoint.model || '(unset)'} (${health.primary?.probe?.latencyMs ?? '?'}ms)`)
-            } else if (health.status === 'degraded') {
-              log('warn', `primary endpoint unavailable; fallback ${health.effective?.endpoint?.baseURL ?? 'unknown'} is serving`)
-            } else {
-              log('warn', `endpoint unavailable at ${config.endpoint.baseURL}: ${health.error ?? 'probe failed'} — run /localdoctor for remediation`)
-            }
-          })
-          .catch(() => {})
-      }
-      const kick = setTimeout(probeAndLog, 1500)
-      kick.unref?.()
-      const timer = setInterval(probeAndLog, 120_000)
-      timer.unref?.()
-      return () => {
-        clearTimeout(kick)
-        clearInterval(timer)
-      }
-    }
-    if (typeof ctx.effect === 'function') ctx.effect(startWarmup)
-    else startWarmup()
+  applyWarmup()
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(
+      () => () => {
+        if (typeof stopWarmup === 'function') stopWarmup()
+        if (typeof promptHelpDispose === 'function') {
+          try {
+            promptHelpDispose()
+          } catch {
+            /* disposal must never break unload */
+          }
+        }
+        promptHelpDispose = null
+      },
+      'local-delegate: prompt and warmup',
+    )
   }
 }
 

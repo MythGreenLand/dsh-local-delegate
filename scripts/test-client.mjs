@@ -226,6 +226,13 @@ assert.ok(html.includes('statsHint'), 'stats card must still render')
 const {
   buildOps,
   buildPiProvider,
+  buildChainUnrouteOps,
+  chainRouteIds,
+  validateEndpointNumbers,
+  groupChainEndpoints,
+  chainRouteProviderId,
+  buildChainRouteOps,
+  missingChainModels,
   HealthCard,
   SubagentCard,
   LevelsCard,
@@ -300,9 +307,140 @@ assert.equal(ollamaProvider.models[0].id, 'gemma4:e2b')
 assert.equal(ollamaProvider.headers.Authorization, 'Bearer ollama')
 const keyedProvider = buildPiProvider({ ...draftOverride.endpoint, kind: 'openai-compatible', apiKey: 'sk-test' })
 assert.equal(keyedProvider.headers.Authorization, 'Bearer sk-test')
+const multiModelProvider = buildPiProvider(draftOverride.endpoint, ['gemma4:e2b', 'gemma4:e4b'])
+assert.equal(JSON.stringify(multiModelProvider.models.map(model => model.id)), JSON.stringify(['gemma4:e2b', 'gemma4:e4b']), 'a chain group carries every model on the same host')
+assert.equal(chainRouteProviderId(0), 'local-delegate')
+assert.equal(chainRouteProviderId(2), 'local-delegate-fb2')
+const chainGroups = groupChainEndpoints({
+  endpoint: { kind: 'ollama-native', baseURL: 'http://127.0.0.1:11434/', model: 'gemma4:e4b', headers: {} },
+  fallbackEndpoints: [
+    { kind: 'ollama-native', baseURL: 'http://127.0.0.1:11434', model: 'gemma4:e2b', headers: {} },
+    { kind: 'ollama-native', baseURL: 'http://10.0.101.11:11434', model: 'gemma4:e2b', headers: {} },
+    { kind: 'ollama-native', baseURL: '', model: 'ignored', headers: {} },
+  ],
+})
+assert.equal(chainGroups.length, 2, 'the chain is grouped by host/credentials')
+assert.equal(JSON.stringify(chainGroups[0].models), JSON.stringify(['gemma4:e4b', 'gemma4:e2b']), 'models on one host share a route')
+assert.equal(chainGroups[1].endpoint.baseURL, 'http://10.0.101.11:11434')
+const chainRouteOps = buildChainRouteOps({
+  endpoint: { kind: 'ollama-native', baseURL: 'http://127.0.0.1:11434', model: 'gemma4:e4b' },
+  fallbackEndpoints: [{ kind: 'ollama-native', baseURL: 'http://10.0.101.11:11434', model: 'gemma4:e2b' }],
+})
+assert.equal(chainRouteOps.length, 2, 'one pi-ai op per endpoint-chain host')
+assert.equal(chainRouteOps[0].path.join('.'), 'providers.local-delegate')
+assert.equal(chainRouteOps[1].path.join('.'), 'providers.local-delegate-fb1')
+assert.equal(chainRouteOps[0].value.baseURL, 'http://127.0.0.1:11434/v1')
+assert.equal(JSON.stringify(chainRouteOps[1].value.models.map(model => model.id)), JSON.stringify(['gemma4:e2b']))
+
+// A model the health probe reports missing must not become a slave route.
+const unhealthy = {
+  primary: { baseURL: 'http://127.0.0.1:11434', model: 'gemma4:e4b', modelFound: true },
+  fallbacks: [{ baseURL: 'http://127.0.0.1:11434', model: 'gemma4:e2b', modelFound: false }],
+}
+assert.equal(missingChainModels(unhealthy).size, 1, 'health must expose known-missing endpoint models')
+const healthyChainOps = buildChainRouteOps(
+  {
+    endpoint: { kind: 'ollama-native', baseURL: 'http://127.0.0.1:11434', model: 'gemma4:e4b' },
+    fallbackEndpoints: [{ kind: 'ollama-native', baseURL: 'http://127.0.0.1:11434', model: 'gemma4:e2b' }],
+  },
+  unhealthy,
+)
+assert.equal(healthyChainOps.length, 1, 'a host with one available model keeps one route')
+assert.equal(JSON.stringify(healthyChainOps[0].value.models.map(model => model.id)), JSON.stringify(['gemma4:e4b']))
+
+// Removing the route must cover the primary and every fallback-chain provider.
+const unrouteOps = buildChainUnrouteOps({
+  'local-delegate': { api: 'openai-completions' },
+  'local-delegate-fb1': { api: 'openai-completions' },
+  'local-delegate-fb2': { api: 'openai-completions' },
+  'intranet-gemma': { api: 'openai-completions' },
+})
+assert.equal(JSON.stringify(unrouteOps.map(op => op.path.join('.'))), JSON.stringify(['providers.local-delegate', 'providers.local-delegate-fb1', 'providers.local-delegate-fb2']))
+assert.ok(unrouteOps.every(op => op.op === 'unset'))
+assert.equal(JSON.stringify(chainRouteIds({ 'local-delegate': {}, 'local-delegate-fb9': {}, 'other': {} })), JSON.stringify(['local-delegate', 'local-delegate-fb9']))
+
+// Auto-registration preserves a user-customized provider instead of clobbering it.
+const customProvider = {
+  displayName: 'My private Gemma route',
+  api: 'openai-completions',
+  baseURL: 'http://127.0.0.1:11434/v1',
+  headers: { Authorization: 'Bearer my-secret', 'X-Custom': 'keep' },
+  models: [{ id: 'gemma4:e2b', contextWindow: 65536 }, { id: 'old-model' }],
+  reasoningEfforts: { off: 'none' },
+}
+const mergedProvider = buildPiProvider(
+  { ...draftOverride.endpoint, baseURL: 'http://127.0.0.1:11434', numCtx: 32768, maxOutputTokens: 4096 },
+  ['gemma4:e4b'],
+  undefined,
+  customProvider,
+)
+assert.equal(mergedProvider.displayName, 'My private Gemma route', 'custom displayName is preserved')
+assert.equal(mergedProvider.headers.Authorization, 'Bearer my-secret', 'custom auth header is preserved')
+assert.equal(mergedProvider.headers['X-Custom'], 'keep', 'extra headers are preserved')
+assert.equal(JSON.stringify(mergedProvider.models.map(model => model.id)), JSON.stringify(['gemma4:e2b', 'old-model', 'gemma4:e4b']), 'existing models stay first, new models are appended')
+assert.equal(mergedProvider.models[0].contextWindow, 65536, 'existing model metadata is preserved')
+assert.equal(JSON.stringify(mergedProvider.reasoningEfforts), JSON.stringify({ off: 'none' }), 'unmanaged fields are preserved')
+const pluginNamed = buildPiProvider(draftOverride.endpoint, ['gemma4:e4b'], undefined, {
+  displayName: '本地/降智模型（SlaveAgentTeams 自动路由）',
+  models: [{ id: 'gemma4:e2b' }],
+})
+assert.equal(pluginNamed.displayName, '本地/降智模型（dsh-local-delegate）', 'a plugin-generated name may be refreshed')
+const chainWithCustom = buildChainRouteOps(
+  { endpoint: { kind: 'ollama-native', baseURL: 'http://127.0.0.1:11434', model: 'gemma4:e4b' }, fallbackEndpoints: [] },
+  undefined,
+  { 'local-delegate': customProvider },
+)
+assert.equal(chainWithCustom[0].value.displayName, 'My private Gemma route', 'chain sync keeps the custom provider name')
+
+// Endpoint number validation stops a saved 0 from breaking every request.
+const tKey = key => (key === 'endpointNumberInvalid' ? '{field} {min} {max}' : key)
+assert.equal(validateEndpointNumbers(draftOverride.endpoint, tKey), null, 'valid endpoint numbers pass')
+assert.match(validateEndpointNumbers({ ...draftOverride.endpoint, timeoutMs: 0 }, tKey).text, /timeoutMs/)
+assert.match(validateEndpointNumbers({ ...draftOverride.endpoint, maxOutputTokens: 0 }, tKey).text, /maxOutputTokens/)
+assert.match(validateEndpointNumbers({ ...draftOverride.endpoint, numCtx: 0 }, tKey).text, /numCtx/)
+assert.match(validateEndpointNumbers({ ...draftOverride.endpoint, temperature: 3 }, tKey).text, /temperature/)
+assert.equal(validateEndpointNumbers({ ...draftOverride.endpoint, timeoutMs: undefined }, tKey), null, 'an absent field is not validated')
 
 assert.ok(render(HealthCard({ t: key => key, health: { status: 'available', checkedAt: 1, effective: { baseURL: 'http://x', model: 'm', latencyMs: 12 } }, status: { config: draftOverride }, onRefresh: () => {} })))
 assert.ok(render(SubagentCard({ t: key => key, piReady: true, subReady: true, routeRegistered: false, subAllowed: false, busy: '', onEnable: () => {}, onDisable: () => {}, savedEndpoint: draftOverride.endpoint })))
+const subagentNoticeHtml = render(
+  SubagentCard({
+    t: key => key,
+    piReady: true,
+    subReady: true,
+    routeRegistered: false,
+    subAllowed: false,
+    busy: '',
+    notice: { kind: 'ok', text: 'subagentDone' },
+    onEnable: () => {},
+    onDisable: () => {},
+    savedEndpoint: draftOverride.endpoint,
+  }),
+)
+assert.ok(subagentNoticeHtml.includes('subagentDone'), 'Subagent action feedback must render inside the card')
+
+const healthChainHtml = render(
+  HealthCard({
+    t: key => key,
+    health: {
+      status: 'degraded',
+      checkedAt: 1,
+      primary: { baseURL: 'http://primary', model: 'm1', reachable: true, modelFound: true, latencyMs: 5, error: null },
+      fallbacks: [
+        { baseURL: 'http://fallback-a', model: 'm2', reachable: false, modelFound: false, latencyMs: 3, error: 'ECONNREFUSED' },
+        { baseURL: 'http://fallback-b', model: 'm3', reachable: true, modelFound: false, latencyMs: 4, error: null },
+      ],
+      effective: { baseURL: 'http://fallback-b', model: 'm3', reachable: true, modelFound: false, latencyMs: 4, error: null },
+    },
+    status: { config: draftOverride },
+    onRefresh: () => {},
+  }),
+)
+assert.ok(healthChainHtml.includes('healthEndpoints'), 'health card must render the endpoint chain')
+assert.ok(healthChainHtml.includes('healthFallback') && healthChainHtml.includes('healthPrimary'), 'health card must label primary and fallbacks')
+assert.ok(healthChainHtml.includes('healthOffline'), 'health card must show an offline fallback')
+assert.ok(healthChainHtml.includes('healthModelMissing'), 'health card must show a reachable fallback with a missing model')
+assert.ok(healthChainHtml.includes('http://fallback-a'), 'health card must show fallback addresses')
 
 // LevelsCard: workspace list, override matching, and the high/max route warning.
 const levelsHtml = render(
@@ -378,21 +516,100 @@ assert.ok(slaveHtml.includes('slaveCompatNote') && slaveHtml.includes('slaveTool
 const slaveEmptyHtml = render(
   SlaveTeamsCard({
     t: key => (key === 'slaveImplicitNode' ? 'slaveImplicitNode {node}' : key),
-    current: { ...draftOverride, slaveTeamsEnabled: true, slaveNodes: [] },
+    current: { ...draftOverride, slaveTeamsEnabled: true, slaveTeamAutoDiscover: false, slaveNodes: [] },
     disabled: false,
     update: () => {},
     piReady: true,
     providers: [],
     routeRegistered: true,
     endpointModel: 'gemma4:e2b',
+    autoDiscover: false,
     onSetNode: () => {},
     onAddNode: () => {},
     onRemoveNode: () => {},
     onFillLocalNode: () => {},
   }),
 )
-assert.ok(slaveEmptyHtml.includes('slaveImplicitNode'), 'slave card must explain the implicit local node')
+assert.ok(slaveEmptyHtml.includes('slaveImplicitNode'), 'slave card must explain the implicit local node when auto discovery is off')
 assert.ok(slaveEmptyHtml.includes('gemma4:e2b'), 'implicit node hint must name the endpoint model')
+
+// Auto mode: one switch, detected pool, no manual rows required.
+const slaveAutoHtml = render(
+  SlaveTeamsCard({
+    t: key => (key === 'slaveAutoDetected' ? 'slaveAutoDetected {count}/{nodes}' : key),
+    current: { ...draftOverride, slaveTeamsEnabled: true, slaveNodes: [] },
+    disabled: false,
+    update: () => {},
+    piReady: true,
+    providers: [],
+    routeRegistered: false,
+    endpointModel: 'gemma4:e2b',
+    autoInfo: {
+      mode: 'auto',
+      enabled: true,
+      nodes: [
+        { name: 'intranet-gemma/gemma4:e2b', kind: 'local', provider: 'intranet-gemma', model: 'gemma4:e2b' },
+        { name: 'deepseek-account/deepseek-flash', kind: 'cloud', provider: 'deepseek-account', model: 'deepseek-flash' },
+      ],
+      providers: [
+        { id: 'intranet-gemma', models: ['gemma4:e2b'] },
+        { id: 'deepseek-account', models: ['deepseek-flash'] },
+      ],
+      issues: [],
+    },
+    autoDiscover: true,
+    onRefreshAuto: () => {},
+    onSyncRoutes: () => {},
+    onSetNode: () => {},
+    onAddNode: () => {},
+    onRemoveNode: () => {},
+    onFillLocalNode: () => {},
+  }),
+)
+assert.ok(slaveAutoHtml.includes('slaveAutoMode'), 'auto mode must be labelled')
+assert.ok(slaveAutoHtml.includes('slaveAutoDetected 2/2'), 'auto mode must show detected routes/nodes')
+assert.ok(slaveAutoHtml.includes('intranet-gemma/gemma4:e2b'), 'auto mode must list detected nodes')
+assert.ok(!slaveAutoHtml.includes('slaveImplicitNode'), 'auto mode must not fall back to the implicit-node warning')
+assert.ok(slaveAutoHtml.includes('slaveAutoRefresh') && slaveAutoHtml.includes('slaveAutoSyncNow'), 'auto mode must offer refresh + route sync')
+
+const slaveAvailableHtml = render(
+  SlaveTeamsCard({
+    t: key => key,
+    current: {
+      ...draftOverride,
+      slaveTeamsEnabled: true,
+      slaveNodes: [{ name: 'chosen', kind: 'local', provider: 'local-delegate', model: 'gemma4:e4b' }],
+    },
+    disabled: false,
+    update: () => {},
+    piReady: true,
+    providers: [],
+    routeRegistered: true,
+    endpointModel: 'gemma4:e4b',
+    autoInfo: {
+      mode: 'explicit',
+      enabled: true,
+      nodes: [{ name: 'chosen', kind: 'local', provider: 'local-delegate', model: 'gemma4:e4b' }],
+      detected: [
+        { name: 'local-delegate/gemma4:e4b', kind: 'local', provider: 'local-delegate', model: 'gemma4:e4b' },
+        { name: 'local-delegate/gemma4:e2b', kind: 'local', provider: 'local-delegate', model: 'gemma4:e2b' },
+      ],
+      providers: [{ id: 'local-delegate', models: ['gemma4:e4b', 'gemma4:e2b'] }],
+      issues: [],
+    },
+    autoDiscover: true,
+    onRefreshAuto: () => {},
+    onSyncRoutes: () => {},
+    onSetNode: () => {},
+    onAddNode: () => {},
+    onRemoveNode: () => {},
+    onFillLocalNode: () => {},
+  }),
+)
+assert.ok(slaveAvailableHtml.includes('slaveAvailable'), 'available-node picker must render')
+assert.ok(slaveAvailableHtml.includes('slaveAvailableSelected'), 'available-node picker must render the selected count')
+assert.ok(slaveAvailableHtml.includes('local-delegate/gemma4:e2b'), 'available-node picker must list unselected detection')
+assert.ok(slaveAvailableHtml.includes('slaveSelectAll'), 'available-node picker must offer select-all')
 
 // Exact card titles (tags make the title key unambiguous).
 const tag = key => '«' + key + '»'

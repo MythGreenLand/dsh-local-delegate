@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import { Config, readConfig, normalizeConfig, configWarnings, publicConfig } from '../lib/config.js'
 import { requestRejection } from '../lib/trust.js'
 import { createApiHandler } from '../lib/api.js'
+import { createStats } from '../lib/stats.js'
 import { apply } from '../index.js'
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
@@ -94,6 +95,21 @@ check('normalizeConfig rejects invalid kind', () => {
   assert.throws(() => normalizeConfig({ endpoint: { kind: 'bogus', baseURL: 'http://x' } }), /endpoint\.kind/)
 })
 
+check('normalizeEndpoint clamps zero and out-of-range numeric fields', () => {
+  const config = readConfig({
+    endpoint: { baseURL: 'http://x', model: 'm', timeoutMs: 0, maxOutputTokens: 0, numCtx: 0, temperature: 9 },
+    fallbackEndpoints: [{ baseURL: 'http://y', model: 'm2', timeoutMs: 10, maxOutputTokens: 99999999, numCtx: 1, temperature: -1 }],
+  })
+  assert.equal(config.endpoint.timeoutMs, 120000, 'timeoutMs 0 must fall back to the default')
+  assert.equal(config.endpoint.maxOutputTokens, 4096, 'maxOutputTokens 0 must fall back to the default')
+  assert.equal(config.endpoint.numCtx, 32768, 'numCtx 0 must fall back to the default')
+  assert.equal(config.endpoint.temperature, 2, 'temperature is clamped to 2')
+  assert.equal(config.fallbackEndpoints[0].timeoutMs, 1000, 'tiny timeout is clamped up')
+  assert.equal(config.fallbackEndpoints[0].maxOutputTokens, 1000000, 'oversized output budget is clamped down')
+  assert.equal(config.fallbackEndpoints[0].numCtx, 512, 'tiny context is clamped up')
+  assert.equal(config.fallbackEndpoints[0].temperature, 0, 'negative temperature is clamped to 0')
+})
+
 check('trust fence rejects a non-loopback Host without connection', () => {
   const req = { headers: { host: '192.168.1.5:8896' } }
   assert.equal(requestRejection(req, undefined), 403)
@@ -170,7 +186,28 @@ check('status API returns version/config/stats and blocks public probe', async (
   assert.match(String(blocked.error), /LOCAL_PROBE_BLOCKED/)
 })
 
-function levelsHandler({ config, registry, registryThrows = false } = {}) {
+check('status?probe=1 re-probes the whole endpoint chain', async () => {
+  let probes = 0
+  const config = normalizeConfig({ endpoint: { baseURL: 'http://127.0.0.1:11434', model: 'm1' } })
+  const handler = createApiHandler({
+    getRuntime: () => ({ health: null, stats: createStats() }),
+    getConnection: () => ({ admit: () => ({ peer: {} }) }),
+    refresh: () => config,
+    refreshHealth: async () => {
+      probes += 1
+    },
+    version: pkg.version,
+    log: () => {},
+  })
+  const res = await new Promise((resolve) => {
+    const response = fakeResponse()
+    handler({ method: 'GET', url: '/api/local-delegate/status?probe=1', headers: {} }, response).then(() => resolve(response))
+  })
+  assert.equal(res.status, 200)
+  assert.equal(probes, 1)
+})
+
+function levelsHandler({ config, registry, registryThrows = false, discoverSlaves } = {}) {
   return createApiHandler({
     getRuntime: () => ({ health: null, stats: { calls: 0 } }),
     getConnection: () => ({ admit: () => ({ peer: {} }) }),
@@ -179,6 +216,7 @@ function levelsHandler({ config, registry, registryThrows = false } = {}) {
           throw new Error('registry unavailable')
         }
       : () => registry,
+    discoverSlaves,
     refresh: () => config,
     version: pkg.version,
     log: () => {},
@@ -188,6 +226,12 @@ function levelsHandler({ config, registry, registryThrows = false } = {}) {
 async function requestLevels(handler, method = 'GET') {
   const res = fakeResponse()
   await handler({ method, url: '/api/local-delegate/levels', headers: {} }, res)
+  return { res, body: res.body ? JSON.parse(res.body) : null }
+}
+
+async function requestSlaves(handler, method = 'GET') {
+  const res = fakeResponse()
+  await handler({ method, url: '/api/local-delegate/slaves', headers: {} }, res)
   return { res, body: res.body ? JSON.parse(res.body) : null }
 }
 
@@ -308,6 +352,7 @@ check('new levels/slave-team config fields parse, normalize, and appear in publi
     'applyToLiveAgents',
     'composerLevelPicker',
     'slaveTeamsEnabled',
+    'slaveTeamAutoDiscover',
     'slaveNodes',
     'slaveTeamDefaultNode',
     'slaveTeamProvider',
@@ -337,10 +382,23 @@ check('configWarnings covers workspace keys, implicit nodes, default node, dupli
   assert.ok(workspaceWarnings.some((warning) => /not an absolute workspace path/.test(warning)))
   assert.ok(workspaceWarnings.some((warning) => /same workspace/.test(warning)))
 
+  const autoNodeWarnings = configWarnings(
+    normalizeConfig({
+      endpoint: { baseURL: 'http://10.0.101.11:11434', model: '' },
+      slaveTeamsEnabled: true,
+    }),
+  )
+  assert.equal(
+    autoNodeWarnings.filter((warning) => /no usable slave node/.test(warning)).length,
+    0,
+    'auto discovery must not warn about an unset implicit model',
+  )
+
   const noNodeWarnings = configWarnings(
     normalizeConfig({
       endpoint: { baseURL: 'http://10.0.101.11:11434', model: '' },
       slaveTeamsEnabled: true,
+      slaveTeamAutoDiscover: false,
     }),
   )
   assert.ok(noNodeWarnings.some((warning) => /no usable slave node/.test(warning) && /endpoint\.model/.test(warning)))
@@ -387,6 +445,8 @@ check('/levels lists workspaces with override/default and slave-team summary', a
   ])
   assert.deepEqual(body.slaveTeam, {
     enabled: true,
+    mode: 'explicit',
+    autoDiscover: true,
     defaultNode: 'local',
     maxSlaves: 4,
     nodes: [{ name: 'local', kind: 'local', provider: 'local-delegate', model: 'gemma4:e2b' }],
@@ -420,6 +480,45 @@ check('/levels degrades gracefully without a workspace registry', async () => {
   const wrongMethod = await requestLevels(levelsHandler({ config, registry: { list: () => [] } }), 'POST')
   assert.equal(wrongMethod.res.status, 405)
   assert.equal(wrongMethod.body.ok, false)
+})
+
+check('/slaves returns the auto-detection snapshot and degrades on discovery errors', async () => {
+  const config = baseConfig({ slaveTeamsEnabled: true })
+  const discovered = await requestSlaves(
+    levelsHandler({
+      config,
+      discoverSlaves: async () => ({
+        mode: 'auto',
+        enabled: true,
+        level: 'default',
+        nodes: [{ name: 'intranet-gemma/gemma4:e2b', kind: 'local', provider: 'intranet-gemma', model: 'gemma4:e2b' }],
+        providers: [{ id: 'intranet-gemma', name: 'Intranet', models: ['gemma4:e2b'] }],
+        issues: [],
+        dropped: [],
+      }),
+    }),
+  )
+  assert.equal(discovered.res.status, 200)
+  assert.equal(discovered.body.ok, true)
+  assert.equal(discovered.body.version, pkg.version)
+  assert.equal(discovered.body.mode, 'auto')
+  assert.equal(discovered.body.nodes[0].provider, 'intranet-gemma')
+  assert.equal(discovered.body.providers[0].models[0], 'gemma4:e2b')
+
+  const failedDiscovery = await requestSlaves(
+    levelsHandler({
+      config,
+      discoverSlaves: async () => {
+        throw new Error('llm unavailable')
+      },
+    }),
+  )
+  assert.equal(failedDiscovery.res.status, 200)
+  assert.equal(failedDiscovery.body.mode, 'error')
+  assert.match(failedDiscovery.body.issues.join(' '), /llm unavailable/)
+
+  const wrongMethod = await requestSlaves(levelsHandler({ config }), 'POST')
+  assert.equal(wrongMethod.res.status, 405)
 })
 
 check('unauthorized request is rejected before routing', async () => {
