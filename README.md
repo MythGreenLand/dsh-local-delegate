@@ -2,24 +2,29 @@
 
 把**机械性文本工作**（翻译、摘要、字段抽取、分类、改写、commit message、命名）交给本地廉价模型，主模型只保留判断与工具调用。
 
-关键不在「多一个模型工具」，而在**正文走哪条路**：插件自己读文件、分块、调用本地模型、写回结果，所以整篇文档**不会进入主模型上下文**。一篇 10KB 文档的翻译，主模型只花约 150 token（一次调用），而不是约 5,000 token（读原文 + 写译文）。
+关键不在「多一个模型工具」，而在**正文走哪条路**：插件自己读文件、分块、调用本地模型、写回结果，所以整篇文档**不会进入主模型上下文**——主模型只花一次调用的提示开销，加一条有界的回执（回执上限由 `maxResultChars` 控制）。
 
-0.4.0 新增两个能力（默认关闭/默认等级下行为与 0.3.0 完全一致）：
+这里不给「省了多少 token」的固定数字：那取决于文档长度、模型和提示词，写死一个数字只会随版本漂移。真实数字看 `/localstats` 与 GUI「节省统计」卡片——插件按自己的口径（字符数 ÷ 3.2，见 `lib/chunker.js` 的 `estimateTokens`）实时记录委派字符数与估算节省 token。
 
-- **本地 AI 介入程度（按项目工作区）**：`无 / 轻度 / 默认 / 更高 / 最高`；默认 = 当前行为；「最高」让主 agent 只做规划，所有修改/命令交给本地 worker 子 agent；
-- **SlaveAgentTeams（多从节点并行）**：root/Team Lead 一次并行启动多个 slave 子 agent，每个跑在本地廉价模型或云端路由上，再由 master 汇总；与原生 Agent Teams 共存。
+## 前置条件
 
-0.4.1 新增：**输入框快捷等级选择器** —— 在文本对话框工具栏（模型 / 推理等级附近）显示紧凑的「本地 AI 介入程度」选择器，并提供一个开关控制是否显示（默认显示）。
+- DSH `0.2.1-rc.5`（记录在 `package.json` 的 `dsh.compatibility`）。
+- 一个可达的模型端点：Ollama 原生 `/api/chat`，或任意 OpenAI 兼容 `/v1/chat/completions`。
+- bundle 默认配置指向**本机**的 `http://127.0.0.1:11434`（Ollama 默认端口），`model` 只是示例名 `gemma4:e2b`——请换成你实际拉过的模型 tag；要连别处就在 GUI（Plugins → dsh-local-delegate → Configure，或 Settings → 本地模型）或 profile `cordis.patch.yml` 里改。默认不带备用端点（`fallbackEndpoints: []`），需要时自己加。
+- 没有可用端点时插件不生成任何 token：启动自检把状态标成 `unavailable`，`local_health` / `/localdoctor` 返回可执行的修复提示；`high` / `max` 等级与 SlaveAgentTeams 依赖已经注册的模型路由，未就绪时会警告。
 
-0.5.0 新增：**SlaveAgentTeams 单开关自动模式** —— 不再需要手工维护节点列表：打开开关后 root/Team Lead 在 spawn 时自动发现所有已挂载的 LLM 路由/模型（本地优先），单个节点启动失败会自动换下一个节点；保存配置时还会把端点链（主端点 + 备用端点）按 host 分组自动注册为 `llm-pi-ai` 路由。显式 `slaveNodes` 仍可作为手动覆盖。
+除了三个全局工具，插件还提供两组**按 agent scope 安装**的能力（默认关闭/默认等级下不改变任何行为）：
 
-0.5.1 修复：等级 `none` 不再误报“slave 工具已安装”；端点数值（timeout/maxOutputTokens/numCtx/temperature）在 GUI 与 Host 双重校验；`Remove route` 同时清理 `local-delegate-fbN`；自动注册保留用户自定义的 provider 名称/模型/headers；`slave_team_send` 的后续回合会更新 status/wait；`slaveTeamAutoDiscover:false` 时 `/slaves` 返回 implicit 模式；输入框等级卡不再重复标签。
+- **本地 AI 介入程度（按项目工作区）**：`无 / 轻度 / 默认 / 更高 / 最高`；默认 = 原有行为；「最高」让主 agent 只做规划，所有修改/命令交给本地 worker 子 agent；
+- **SlaveAgentTeams（多从节点并行）**：root/Team Lead 一次并行启动多个 slave 子 agent，每个跑在本地廉价模型或云端路由上，再由 master 汇总；与原生 Agent Teams 共存，单开关自动发现已挂载的模型路由。
 
-- 当前版本：**0.5.1**
+逐版本的变更见下方[版本历史](#版本历史)。
+
+- 当前版本：**0.5.2**
 - 协议：Ollama 原生 `/api/chat`（可关思考、保活、控上下文）或任意 OpenAI 兼容端点
 - 配置：**DSH GUI 可视化配置**（Plugins → 行 Configure，或 Settings → 本地模型），也继续支持 profile `cordis.patch.yml` 覆盖
 - 安装与验证：**一键部署**（把你的智能体指向本仓库即可）见 [DEPLOY.md](DEPLOY.md)；手动/升级/回滚见 [INSTALL.md](INSTALL.md)
-- 本版更新：[docs/release-0.5.1.md](docs/release-0.5.1.md)
+- 本版更新：[docs/release-0.5.2.md](docs/release-0.5.2.md)
 
 ## 一键部署（交给你的智能体）
 
@@ -216,7 +221,7 @@ GUI 的 SlaveAgentTeams 卡片会显示「自动模式」、检测到的路由/�
     retries: 1
     endpoint:
       kind: ollama-native            # ollama-native | openai-compatible
-      baseURL: http://10.0.101.11:11434
+      baseURL: http://192.168.1.50:11434   # 改成你的端点；默认 bundle 值是 127.0.0.1:11434
       path: ""                       # 默认 /api/chat 或 /v1/chat/completions
       model: gemma4:e2b
       apiKey: ""                     # 明文密钥（GUI 也可填）；更推荐下面的 apiKeyEnv
@@ -229,7 +234,7 @@ GUI 的 SlaveAgentTeams 卡片会显示「自动模式」、检测到的路由/�
       timeoutMs: 120000
       temperature: 0
       maxOutputTokens: 4096
-    fallbackEndpoints:               # 主端点故障时按顺序尝试
+    fallbackEndpoints:               # 主端点故障时按顺序尝试；默认 bundle 值是空数组
       - kind: ollama-native
         baseURL: http://127.0.0.1:11434
         model: gemma4:26b
@@ -323,18 +328,26 @@ GUI 的 SlaveAgentTeams 卡片会显示「自动模式」、检测到的路由/�
 
 ## 成本模型
 
-| 工作 | 主模型直接做 | 文件模式委派 |
-|---|---|---|
-| 翻译 10KB 文档 | ≈5,000 token | ≈200 token |
-| 汇总 40KB 日志 | ≈10,600 token | ≈500 token |
-| 20 个文件批量加注释 | ≈26,000 token | ≈700 token |
-| 翻译一句话 | ≈200 token | 更贵 → 已在提示词里要求自己做 |
+委派一次的成本基本是**常数**：一段固定提示（`promptHelp` 注入，约 300 token，可关）+ 一条有界回执（`maxResultChars`）；主模型自己做时，成本随正文字数线性增长。所以：
+
+- **长文本**（整篇翻译、长日志汇总、批量改注释）：正文不进上下文，节省随长度放大；
+- **短文本**（一句话翻译、三行摘要）：委派反而更贵，提示词里已经要求模型自己做，`light` 等级下内联 `text` 会被直接拒绝；
+- 想报数字就报实测的：`/localstats` 与 GUI「节省统计」（委派调用数、失败数、本地处理字符、估算节省 token，口径为字符数 ÷ 3.2；内存计数，插件重载清零）。
 
 0.4.0 的等级进一步改变成本结构：
 
 - `light`：只有长文档/批量才委派，短文本主模型自己处理，减少「为省 token 反而多花一次调用」；
 - `high` / `max`：主模型只负责规划与验收，执行 token 落在本地模型上；但本地 5B 模型做多步修改不可靠，`plannerFallback: strong-worker`（默认）会在失败时用强模型重试，成本会上升——建议先在低风险、可验证的任务（加注释、格式转换、独立文件翻译）上试点；
 - SlaveAgentTeams：N 个 slave 并行，主模型只花规划 + 汇总 token；slave 失败 `inherit` 回退同样会改用父模型（成本上升），可用 `fail` 让成本更可预测。
+
+## 版本历史
+
+- **0.5.2**：打包默认值改为通用值——`endpoint.baseURL` 指向本机 `127.0.0.1:11434`，去掉指向维护者内网的地址与捆绑备用端点（`fallbackEndpoints: []`）；`@deepseek-ai/schemastery` peer 范围放宽为 `>=3.18.1 <3.18.6-0 || >=3.18.6-0 <4.0.0`，预发布 harness（如 `3.18.6-alpha.x`）不会再触发 ERESOLVE；README 增加前置条件，并把版本流水账移出顶部。
+- **0.5.1**：等级 `none` 不再误报「slave 工具已安装」；端点数值（timeout / maxOutputTokens / numCtx / temperature）在 GUI 与 Host 双重校验；`Remove route` 同时清理 `local-delegate-fbN`；自动注册保留用户自定义的 provider 名称 / 模型 / headers；`slave_team_send` 的后续回合会更新 status / wait；`slaveTeamAutoDiscover:false` 时 `/slaves` 返回 implicit 模式；输入框等级卡不再重复标签。
+- **0.5.0**：**SlaveAgentTeams 单开关自动模式** —— 不再需要手工维护节点列表：打开开关后 root/Team Lead 在 spawn 时自动发现所有已挂载的 LLM 路由/模型（本地优先），单个节点启动失败自动换下一个节点；保存配置时把端点链（主端点 + 备用端点）按 host 分组自动注册为 `llm-pi-ai` 路由。显式 `slaveNodes` 仍可作为手动覆盖。
+- **0.4.1**：**输入框快捷等级选择器** —— 在文本对话框工具栏（模型 / 推理等级附近）显示紧凑的「本地 AI 介入程度」选择器，并提供一个开关控制是否显示（默认显示）。
+- **0.4.0**：**本地 AI 介入程度（按项目工作区）** 与 **SlaveAgentTeams（多从节点并行）**；默认等级下行为与 0.3.0 一致。
+- **0.3.0**：GUI 配置、端点编辑器、连接测试与模型发现、节省统计、子 agent 路由注册。
 
 ## 已知限制
 

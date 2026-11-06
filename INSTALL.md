@@ -6,7 +6,7 @@
 
 ```powershell
 # 1) 从 DSH 宿主机验证端点可达、模型存在、能生成（不经过插件）
-node "<插件目录>\scripts\verify-endpoint.mjs" --base-url http://10.0.101.11:11434 --model gemma4:e2b
+node "<插件目录>\scripts\verify-endpoint.mjs" --base-url http://127.0.0.1:11434 --model gemma4:e2b
 # OpenAI 兼容端点示例：
 node "<插件目录>\scripts\verify-endpoint.mjs" --kind openai-compatible --base-url http://host:11434/v1 --model gemma4:e2b --api-key ollama
 ```
@@ -37,7 +37,7 @@ node "<插件目录>\scripts\verify-endpoint.mjs" --kind openai-compatible --bas
 # Windows（PowerShell 7）：下载最新 Release
 pwsh -NoProfile -File scripts\install-from-github.ps1 -Version latest
 # 指定版本 / 自定义目录 / 覆盖同版本目录
-pwsh -NoProfile -File scripts\install-from-github.ps1 -Version v0.5.1 -Force
+pwsh -NoProfile -File scripts\install-from-github.ps1 -Version v0.5.2 -Force
 ```
 
 ```bash
@@ -106,7 +106,7 @@ bash scripts/install-from-github.sh latest
     retries: 1
     endpoint:
       kind: ollama-native            # ollama-native 或 openai-compatible
-      baseURL: http://10.0.101.11:11434
+      baseURL: http://127.0.0.1:11434  # bundle 默认值；改成你自己的端点
       model: gemma4:e2b
       think: false                   # 思考模型必须 false
       keepAlive: 30m
@@ -133,25 +133,27 @@ bash scripts/install-from-github.sh latest
 
 > ⚠️ 该行的 `config` 是**整块替换**：手工覆盖时要把想保留的字段都写出来（其余回到默认值）。GUI 保存只写入发生变化的字段，未改动字段继续继承默认值。
 
-## 4. 升级到 0.5.1（免重启流程）
+## 4. 升级到 0.5.2（免重启流程）
+
+0.5.2 只改打包默认值与 peer 范围：`endpoint.baseURL` 变成通用的 `127.0.0.1:11434`（不再指向维护者内网），`fallbackEndpoints` 默认为空，`@deepseek-ai/schemastery` peer 放宽到 `>=3.18.1 <3.18.6-0 || >=3.18.6-0 <4.0.0`。**如果你已经在 profile 里覆盖过 `config`，升级不会影响你的端点**；只有仍使用 bundle 默认值的人才会跟着变成 127.0.0.1。
 
 0.5.1 修复了等级 none 的 slave 工具误报、端点数值 0 校验、Remove route 遗留 fb 路由、自动注册覆盖用户 provider 定制、send 后续回合状态、`slaveTeamAutoDiscover:false` 的 /slaves 模式以及重复标签；安装流程与 0.5.0 相同。`n`n0.5.0 把 SlaveAgentTeams 改成单开关自动模式：默认 `slaveTeamAutoDiscover: true`，`slaveTeamsEnabled` 打开后在 spawn 时自动发现所有已挂载 LLM 路由/模型（本地优先），节点失败自动换下一个；保存配置时把 `endpoint` + `fallbackEndpoints` 自动注册为 `llm-pi-ai` 路由。显式 `slaveNodes` 仍可手动覆盖。默认关闭时行为与 0.4.1 完全一致。
 
 1. **备份**（可回滚）：
    - 复制 profile 的 `cordis.patch.yml`（桌面端默认在 `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`）；
    - 保留旧版本目录（如 `dsh-local-delegate-0.4.1`），不要删。
-2. 修改/同步源码到 **0.5.1 新版本目录**（脚本自动读取 `package.json` 版本号）：
+2. 修改/同步源码到 **0.5.2 新版本目录**（脚本自动读取 `package.json` 版本号）：
    ```powershell
    pwsh -NoProfile -File "<源码目录>\scripts\sync-install.ps1"
    ```
-   它会做：语法检查 → 同步到 `%USERPROFILE%\.dsh\local-plugins\dsh-local-delegate-0.5.1` → 打印下一步。
+   它会做：语法检查 → 同步到 `%USERPROFILE%\.dsh\local-plugins\dsh-local-delegate-0.5.2` → 打印下一步。
 3. 让 Agent 先卸载旧包、再装新目录：
    ```
    plugin_manager action=remove_bundle target=dsh-local-delegate
-   plugin_manager action=install_bundle target=C:\Users\<你>\.dsh\local-plugins\dsh-local-delegate-0.5.1
+   plugin_manager action=install_bundle target=C:\Users\<你>\.dsh\local-plugins\dsh-local-delegate-0.5.2
    ```
 4. **刷新 Web GUI**（F5）：SlaveAgentTeams 卡片应出现「自动检测并启用…」开关、自动模式面板与「刷新检测 / 立即注册端点链路由」按钮。若入口/控件没出现，**重启一次 DSH 桌面端**（Client 半模块缓存兜底）。
-5. 验证：`local_health` 状态行显示 `v0.5.1`；`/localpolicy` 显示 `slave teams: enabled=..., mode=auto`；打开开关后新会话里 `slave_team_status` 返回自动检测到的节点。
+5. 验证：`local_health` 状态行显示 `v0.5.2`；`/localpolicy` 显示 `slave teams: enabled=..., mode=auto`；打开开关后新会话里 `slave_team_status` 返回自动检测到的节点。
 6. 保持默认等级/开关关闭时行为与 0.4.1 一致（旧测试与手工流程全过）。
 
 同一版本重复安装不会重新加载代码；这也是脚本按版本分目录的原因。

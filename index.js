@@ -50,7 +50,7 @@ export const name = 'local-delegate'
 export const inject = ['tools']
 
 /** Reported by local_health, /localdoctor, the startup log line, and the GUI. */
-const PLUGIN_VERSION = '0.5.1'
+const PLUGIN_VERSION = '0.5.2'
 
 const TASKS = ['translate', 'summarize', 'extract', 'classify', 'rewrite', 'commit_message', 'names']
 

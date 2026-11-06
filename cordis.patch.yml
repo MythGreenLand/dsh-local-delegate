@@ -2,11 +2,15 @@
 #
 # Inserts the Host half of the plugin. Everything about the endpoint lives in
 # this row's `config`: to point at another machine, protocol, or model, override
-# the same row id in your profile `cordis.patch.yml` (the last patch layer wins).
+# the same row id in your profile `cordis.patch.yml` (the last patch layer wins),
+# or use the Web GUI (Plugins → dsh-local-delegate → Configure / Settings → 本地模型).
 #
-# The fallback below is the local Ollama instance on this workstation: when the
-# intranet server is down, mechanical work degrades to a slower but available
-# model instead of failing. Remove it if that machine has no local Ollama.
+# The defaults below are deliberately generic: the Ollama instance on the same
+# machine and an example model name. Nothing points at the maintainer's network,
+# so a fresh install either finds a local Ollama on 127.0.0.1:11434 with that
+# model, or reports `unavailable` with a fix in /localdoctor until you configure
+# one. `model` is an example, not a recommendation — set the tag you actually
+# have. Add `fallbackEndpoints` only if you have a second endpoint to fall back to.
 - insert:
     - id: local-delegate
       name: 'dsh-local-delegate'
@@ -15,20 +19,13 @@
         retries: 1
         endpoint:
           kind: ollama-native
-          baseURL: http://10.0.101.11:11434
+          baseURL: http://127.0.0.1:11434
           model: gemma4:e2b
           think: false
           keepAlive: 30m
           numCtx: 32768
           timeoutMs: 120000
-        fallbackEndpoints:
-          - kind: ollama-native
-            baseURL: http://127.0.0.1:11434
-            model: gemma4:26b
-            think: false
-            keepAlive: 15m
-            numCtx: 32768
-            timeoutMs: 240000
+        fallbackEndpoints: []
         chunkChars: 4000
         maxConcurrency: 2
         maxInlineChars: 8000
